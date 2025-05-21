@@ -23,14 +23,23 @@
 
 namespace duckdb {
 
+std::map<std::string, std::string> generated_types =
+{
+#include "generated_types.cpp"
+};
+
+// Output the JSON type for the given REST type
 inline void GitHubRESTTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &name_vector = args.data[0];
+    
     UnaryExecutor::Execute<string_t, string_t>(
 	    name_vector, result, args.size(),
-	    [&](string_t name_t) {
-            std::string name = name_t.GetString();
-#include "generated_types.cpp"
-            throw InvalidInputException("Unknown type: %s", name);
+	    [&](string_t name) {
+            auto it = generated_types.find(name.GetString());
+            if (it == generated_types.end()) {
+                throw InvalidInputException("Unknown type: %s", name.GetString());
+            }
+            return StringVector::AddString(result, it->second);
         });
 }
 

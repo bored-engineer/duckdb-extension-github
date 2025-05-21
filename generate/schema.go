@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -81,11 +82,16 @@ func convertType(schema *openapi3.Schema) string {
 }
 
 func main() {
-	root, err := openapi3.NewLoader().LoadFromFile("/Users/lyoung/git/github.com/github/rest-api-description/descriptions/ghec/ghec.2022-11-28.json")
+	root, err := openapi3.NewLoader().LoadFromURI(&url.URL{
+		Scheme: "https",
+		Host:   "github.com",
+		Path:   "/github/rest-api-description/raw/refs/heads/main/descriptions/ghec/ghec.yaml",
+	})
 	if err != nil {
-		log.Fatalf("(*openapi3.Loader).LoadFromFile() failed: %v", err)
+		log.Fatalf("(*openapi3.Loader).LoadFromURI() failed: %v", err)
 	}
+	fmt.Println("// go run -C generate . > src/generated_types.cpp")
 	for name, schema := range root.Components.Schemas {
-		fmt.Printf("if (name == %q) return StringVector::AddString(result, %q);\n", name, convertType(schema.Value))
+		fmt.Printf("{%q,%q},\n", name, convertType(schema.Value))
 	}
 }
