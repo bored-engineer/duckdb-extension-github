@@ -23,6 +23,17 @@
 
 namespace duckdb {
 
+inline void GitHubRESTTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &name_vector = args.data[0];
+    UnaryExecutor::Execute<string_t, string_t>(
+	    name_vector, result, args.size(),
+	    [&](string_t name_t) {
+            std::string name = name_t.GetString();
+#include "generated_types.cpp"
+            throw InvalidInputException("Unknown type: %s", name);
+        });
+}
+
 // Parses the rel="next' URL from the Link header returned by GitHub API
 static std::string ParseLinkNextURL(const std::string &link_header_content) {
 	auto split_outer = StringUtil::Split(link_header_content, ',');
@@ -205,6 +216,8 @@ static void GitHubRESTFunction(
 static void LoadInternal(DatabaseInstance &instance) {
     TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
     ExtensionUtil::RegisterFunction(instance, github_rest_function);
+    ScalarFunction github_rest_type_function("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction);
+    ExtensionUtil::RegisterFunction(instance, github_rest_type_function);
 }
 
 void GithubClientExtension::Load(DuckDB &db) {
