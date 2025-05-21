@@ -98,6 +98,7 @@ static std::string GetHttpErrorMessage(const duckdb_httplib_openssl::Result &res
 
 struct GitHubRESTBindData : public TableFunctionData {
     string url;
+    string host;
     unique_ptr<duckdb_httplib_openssl::Client> client;
 };
 
@@ -127,6 +128,7 @@ static unique_ptr<FunctionData> GitHubRESTBind(
     }
 
     // Set the URL to the combined host and path
+    result->host = host;
     result->url = host + path;
 
     // Setup the HTTP client to use for each request
@@ -193,7 +195,11 @@ static void GitHubRESTFunction(
     output.SetCardinality(1);
 
     // Check for the "Link" header to see if there's a next page
-    data.url = ParseLinkNextURL(res->get_header_value("Link"));
+    std::string next_url = ParseLinkNextURL(res->get_header_value("Link"));
+    if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
+        throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
+    }
+    data.url = next_url;
 }
 
 static void LoadInternal(DatabaseInstance &instance) {
