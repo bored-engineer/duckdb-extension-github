@@ -5,8 +5,10 @@
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
 #ifdef USE_ZLIB
@@ -21,58 +23,28 @@
 
 namespace duckdb {
 
-// Helper function to parse URL and setup client
-static std::pair<std::string, std::string> ParseUrl(const std::string &url) {
-    std::string scheme, domain, path, client_url;
-    size_t pos = url.find("://");
-    std::string mod_url = url;
-    if (pos == std::string::npos) {
-        // Default to https://api.github.com if no scheme is provided
-        scheme = "https";
-        domain = "api.github.com";
-        path = mod_url;
-    } else {
-        scheme = mod_url.substr(0, pos);
-        mod_url.erase(0, pos + 3);
-        pos = mod_url.find("/");
-        if (pos != std::string::npos) {
-            domain = mod_url.substr(0, pos);
-            path = mod_url.substr(pos);
-        } else {
-            domain = mod_url;
-            path = "/";
-        }
-    }
+// Parses the rel="next' URL from the Link header returned by GitHub API
+static std::string ParseLinkNextURL(const std::string &link_header_content) {
+	auto split_outer = StringUtil::Split(link_header_content, ',');
+	for (auto &split : split_outer) {
+		auto split_inner = StringUtil::Split(split, ';');
+		if (split_inner.size() != 2) {
+			throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", link_header_content);
+		}
 
-    // Construct client url with scheme if specified
-    if (scheme.length() > 0) {
-        client_url = scheme + "://" + domain;
-    } else {
-        client_url = domain;
-    }
+		StringUtil::Trim(split_inner[1]);
+		if (split_inner[1] == "rel=\"next\"") {
+			StringUtil::Trim(split_inner[0]);
 
-    return std::make_pair(client_url, path);
-}
+			if (!StringUtil::StartsWith(split_inner[0], "<") || !StringUtil::EndsWith(split_inner[0], ">")) {
+				throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", link_header_content);
+			}
 
-// Helper function to setup client
-static duckdb_httplib_openssl::Client SetupHttpClient(const std::string &url) {
-    duckdb_httplib_openssl::Client client(url);
-    client.set_read_timeout(60, 0); // 60 seconds
-    client.set_follow_location(true); // Follow redirects
-    return std::move(client);
-}
+			return split_inner[0].substr(1, split_inner[0].size() - 2);
+		}
+	}
 
-// Extract the rel=next from the "Link" header
-std::string extract_next_link(const std::string &link_header) {
-    std::string next_link;
-    size_t end = link_header.find(">; rel=\"next\"");
-    if (end != std::string::npos) {
-        size_t start = link_header.rfind("<", end);
-        if (start != std::string::npos) {
-            next_link = link_header.substr(start + 1, end - start - 1);
-        }
-    }
-    return next_link;
+	return "";
 }
 
 // Helper function to return the description of one HTTP error.
@@ -124,74 +96,109 @@ static std::string GetHttpErrorMessage(const duckdb_httplib_openssl::Result &res
     return err_message;
 }
 
-static void GithubRestRequestFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    D_ASSERT(args.data.size() == 1);
+struct GitHubRESTBindData : public TableFunctionData {
+    string url;
+    unique_ptr<duckdb_httplib_openssl::Client> client;
+};
 
-    UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t input) {
-        std::string url = input.GetString();
-        auto client_url_and_path = ParseUrl(input.GetString());
-        auto &client_url = client_url_and_path.first;
-        auto &path = client_url_and_path.second;
-        auto client = SetupHttpClient(client_url);
+static unique_ptr<FunctionData> GitHubRESTBind(
+    ClientContext &context,
+    TableFunctionBindInput &input,
+    vector<LogicalType> &return_types,
+    vector<string> &names
+) {
+    auto result = make_uniq<GitHubRESTBindData>();
 
-        // Set some reasonable headers specific to the GitHub API
-        /*duckdb_httplib_openssl::Headers header_map = {
-            {"User-Agent", "DuckDB"},
-            {"X-Github-Api-Version", "2022-11-28"},
-            {"X-Github-Next-Global-ID", "1"},
-        };*/
+    // Extract the path from the input
+    std::string path = input.inputs[0].GetValue<string>();
 
-        // Perform the first HTTP request
-        //auto res = client.Get(path.c_str(), header_map);
-        auto res = client.Get(path.c_str());
-        if (!res || res->status != 200) {
-            throw InvalidInputException(GetHttpErrorMessage(res, "GET"));
+    // Default to https://api.github.com/, but allow it to be overridden (GitHub Enterprise)
+    std::string host = "https://api.github.com";
+    if (StringUtil::StartsWith(path, "http")) {
+        if (!StringUtil::StartsWith(path, "https://")) {
+            throw InvalidInputException("Invalid URL scheme. Only HTTPS is supported.");
         }
-
-        // If there is no "Link" header, we're done, just return the body as JSON.
-        std::string next = extract_next_link(res->get_header_value("link"));
-        if (next.empty()) {
-            return StringVector::AddString(result, res->body);
+        size_t pos = path.find("/", 8);
+        if (pos == std::string::npos) {
+            throw InvalidInputException("Invalid URL hostname. Expected format: https://api.github.com/<path>");
         }
+        host = path.substr(0, pos);
+        path = path.substr(pos);
+    }
 
-        // Verify that the response is a JSON array
-        if (!(res->body.length() >= 2 && res->body[0] == '[' && res->body[res->body.length() - 1] == ']')) {
-            throw InvalidInputException("Expected JSON array, got: " + res->body);
-        }
+    // Set the URL to the combined host and path
+    result->url = host + path;
 
-        // We need to paginate until there are no more pages
-        while(!next.empty()) {
-            // Verify that the link is the same domain
-            if (next.find(client_url + "/") != 0) {
-                throw InvalidInputException("Invalid rel=\"next\" link: " + next);
-            } else {
-                path = next.substr(client_url.length());
-            }
+    // Setup the HTTP client to use for each request
+    result->client = make_uniq<duckdb_httplib_openssl::Client>(host);
+    result->client->set_read_timeout(60, 0); // 60 seconds
+    result->client->set_follow_location(true); // Follow redirects
 
-            // Perform the next HTTP request
-            //auto next_res = client.Get(path.c_str(), header_map);
-            auto next_res = client.Get(path.c_str());
-            if (!next_res || next_res->status != 200) {
-                throw InvalidInputException(GetHttpErrorMessage(next_res, "GET"));
-            }
-            next = extract_next_link(next_res->get_header_value("link"));
+    // Use the SecretManager to find the 'http' bearer token for GitHub
+    auto &secret_manager = SecretManager::Get(context);
+    auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+    auto secret_match = secret_manager.LookupSecret(transaction, host + "/", "http");
+    
+    if (!secret_match.HasMatch()) {
+        throw InvalidInputException("No GitHub secret found. Please create a 'http' secret with 'CREATE SECRET' first.");
+    }
 
-            // Verify that the response is a JSON array
-            if (!(next_res->body.length() >= 2 && next_res->body[0] == '[' && next_res->body[next_res->body.length() - 1] == ']')) {
-                throw InvalidInputException("Expected JSON array, got: " + next_res->body);
-            }
+    auto &secret = secret_match.GetSecret();
+    if (secret.GetType() != "http") {
+        throw InvalidInputException("Invalid secret type. Expected 'http', got '%s'", secret.GetType());
+    }
 
-            // Replace the final character (']') with a ',' and append the next response body starting after '['
-            res->body[res->body.length() - 1] = ',';
-            res->body += next_res->body.substr(1);
-        }
+    const auto *kv_secret = dynamic_cast<const KeyValueSecret*>(&secret);
+    if (!kv_secret) {
+        throw InvalidInputException("Invalid secret type for GitHub secret");
+    }
 
-        return StringVector::AddString(result, res->body);
-    });
+    // Attach the bearer token to every request
+    Value token_value;
+    if (!kv_secret->TryGetValue("bearer_token", token_value)) {
+        throw InvalidInputException("'bearer_token' not found for GitHub secret");
+    }
+    result->client->set_bearer_token_auth(token_value.ToString());
+
+    // Set the return types and names
+    names.emplace_back("url");
+    return_types.emplace_back(LogicalType::VARCHAR);
+    names.emplace_back("body");
+    return_types.emplace_back(LogicalType::JSON());
+
+    return std::move(result);
+}
+
+static void GitHubRESTFunction(
+    ClientContext &context,
+    TableFunctionInput &data_p,
+    DataChunk &output
+) {
+    auto &data = const_cast<GitHubRESTBindData&>(data_p.bind_data->Cast<GitHubRESTBindData>());
+
+    // If there's no next page, we're done!
+    if (data.url.empty()) {
+        return;
+    }
+
+    // Perform the HTTP GET request
+    auto res = data.client->Get(data.url);
+    if (!res || res->status != 200) {
+        throw InvalidInputException(GetHttpErrorMessage(res, "GET"));
+    }
+
+    // Store the output
+    output.SetValue(0, 0, Value(data.url));
+    output.SetValue(1, 0, Value(res->body));
+    output.SetCardinality(1);
+
+    // Check for the "Link" header to see if there's a next page
+    data.url = ParseLinkNextURL(res->get_header_value("Link"));
 }
 
 static void LoadInternal(DatabaseInstance &instance) {
-    ExtensionUtil::RegisterFunction(instance, ScalarFunction("github_rest", {LogicalType::VARCHAR}, LogicalType::JSON(), GithubRestRequestFunction));
+    TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
+    ExtensionUtil::RegisterFunction(instance, github_rest_function);
 }
 
 void GithubClientExtension::Load(DuckDB &db) {
