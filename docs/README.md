@@ -23,3 +23,22 @@ D SELECT url FROM github_rest('/users/bored-engineer/repos?per_page=50');
 │ https://api.github.com/user/541842/repos?per_page=50&page=3   │
 └───────────────────────────────────────────────────────────────┘
 ```
+Use `github_rest_type` and `github_rest_list_type` with [`json_transform`](https://duckdb.org/docs/data/json/json_functions.html#json-transformation) to parse API responses into typed structs with named columns:
+```sql
+D SELECT r.full_name, r.stargazers_count, r.language
+  FROM (
+    SELECT UNNEST(json_transform(body, github_rest_list_type('repository'))) AS r
+    FROM github_rest('/users/bored-engineer/repos?per_page=100')
+  )
+  ORDER BY r.stargazers_count DESC LIMIT 5;
+┌──────────────────────────────────────────────────┬──────────────────┬─────────────┐
+│                    full_name                     │ stargazers_count │  language   │
+│                     varchar                      │      int64       │   varchar   │
+├──────────────────────────────────────────────────┼──────────────────┼─────────────┤
+│ bored-engineer/iOS-sbutils                       │               78 │ Objective-C │
+│ bored-engineer/iOS-DataProtection                │               39 │ C           │
+│ bored-engineer/bf-lookup                         │               32 │ Go          │
+│ bored-engineer/hackeroni-slack-disclosure-bot    │               20 │ Python      │
+│ bored-engineer/github-conditional-http-transport │               17 │ Go          │
+└──────────────────────────────────────────────────┴──────────────────┴─────────────┘
+```
