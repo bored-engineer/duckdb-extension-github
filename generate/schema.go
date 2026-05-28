@@ -91,6 +91,7 @@ func main() {
 		log.Fatalf("(*openapi3.Loader).LoadFromURI() failed: %v", err)
 	}
 	fmt.Println("// go run -C generate . > src/generated_types.cpp")
+	fmt.Println("// clang-format off")
 	for name, schema := range root.Components.Schemas {
 		fmt.Printf("{%q,%q},\n", name, convertType(schema.Value))
 	}
