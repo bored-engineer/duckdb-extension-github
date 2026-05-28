@@ -1,10 +1,9 @@
-#define DUCKDB_EXTENSION_MAIN
 #include "github_client_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
@@ -237,17 +236,17 @@ static void GitHubRESTFunction(
     data.url = next_url;
 }
 
-static void LoadInternal(DatabaseInstance &instance) {
+static void LoadInternal(ExtensionLoader &loader) {
     TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
-    ExtensionUtil::RegisterFunction(instance, github_rest_function);
+    loader.RegisterFunction(github_rest_function);
     ScalarFunction github_rest_type_function("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction);
-    ExtensionUtil::RegisterFunction(instance, github_rest_type_function);
+    loader.RegisterFunction(github_rest_type_function);
     ScalarFunction github_rest_list_type_function("github_rest_list_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTListTypeFunction);
-    ExtensionUtil::RegisterFunction(instance, github_rest_list_type_function);
+    loader.RegisterFunction(github_rest_list_type_function);
 }
 
-void GithubClientExtension::Load(DuckDB &db) {
-    LoadInternal(*db.instance);
+void GithubClientExtension::Load(ExtensionLoader &loader) {
+    LoadInternal(loader);
 }
 
 std::string GithubClientExtension::Name() {
@@ -266,17 +265,9 @@ std::string GithubClientExtension::Version() const {
 } // namespace duckdb
 
 extern "C" {
-DUCKDB_EXTENSION_API void github_client_init(duckdb::DatabaseInstance &db) {
-    duckdb::DuckDB db_wrapper(db);
-    db_wrapper.LoadExtension<duckdb::GithubClientExtension>();
-}
-
-DUCKDB_EXTENSION_API const char *github_client_version() {
-    return duckdb::DuckDB::LibraryVersion();
+DUCKDB_CPP_EXTENSION_ENTRY(github_client, loader) {
+    duckdb::LoadInternal(loader);
 }
 }
 
-#ifndef DUCKDB_EXTENSION_MAIN
-#error DUCKDB_EXTENSION_MAIN not defined
-#endif
 
