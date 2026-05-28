@@ -92,7 +92,16 @@ func main() {
 	}
 	fmt.Println("// go run -C generate . > src/generated_types.cpp")
 	fmt.Println("// clang-format off")
-	for name, schema := range root.Components.Schemas {
-		fmt.Printf("{%q,%q},\n", name, convertType(schema.Value))
+	for _, name := range slices.Sorted(maps.Keys(root.Components.Schemas)) {
+		value := convertType(root.Components.Schemas[name].Value)
+		// MSVC limits string literals to 16380 characters (C2026), so split
+		// large values into adjacent string literals that the compiler joins.
+		const chunkSize = 8192
+		fmt.Printf("{%q,", name)
+		for len(value) > chunkSize {
+			fmt.Printf("%q\n    ", value[:chunkSize])
+			value = value[chunkSize:]
+		}
+		fmt.Printf("%q},\n", value)
 	}
 }
