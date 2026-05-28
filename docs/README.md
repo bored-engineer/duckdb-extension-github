@@ -1,5 +1,14 @@
 # DuckDB GitHub Extension
-This repository contains a DuckDB extension for interacting with the [GitHub REST API](https://docs.github.com/en/rest?apiVersion=2022-11-28):
+This repository contains a DuckDB extension for interacting with the [GitHub REST API](https://docs.github.com/en/rest?apiVersion=2022-11-28).
+
+A [GitHub personal access token](https://github.com/settings/tokens) is required. Create an `http` secret scoped to `https://api.github.com` before calling any functions:
+```sql
+D CREATE SECRET github (
+    TYPE http,
+    BEARER_TOKEN 'github_pat_...',
+    SCOPE 'https://api.github.com'
+  );
+```
 ```sql
 D SELECT UNNEST(body->>'$.ssh_keys[*]') AS ssh_key FROM github_rest('/meta');
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
