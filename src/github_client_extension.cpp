@@ -587,6 +587,8 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
 	std::string host = BindCommonRequestData(context, input, *result);
 	result->url = host + "/graphql";
 
+	names.emplace_back("url");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	AddCommonResultColumns(return_types, names);
 	names.emplace_back("errors");
 	return_types.emplace_back(LogicalType::LIST(LogicalType::JSON()));
@@ -654,12 +656,13 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	}
 	yyjson_doc_free(doc);
 
-	output.SetValue(0, 0, data_value);
-	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
-	output.SetValue(2, 0, BuildRateLimitValue(resp_headers));
-	output.SetValue(3, 0, RequestIdValue(resp_headers));
-	output.SetValue(4, 0, errors_value);
-	output.SetValue(5, 0, warnings_value);
+	output.SetValue(0, 0, Value(data.url));
+	output.SetValue(1, 0, data_value);
+	output.SetValue(2, 0, BuildHeadersMapValue(resp_headers));
+	output.SetValue(3, 0, BuildRateLimitValue(resp_headers));
+	output.SetValue(4, 0, RequestIdValue(resp_headers));
+	output.SetValue(5, 0, errors_value);
+	output.SetValue(6, 0, warnings_value);
 	output.SetCardinality(1);
 
 	// Continue paginating while the response reports another page and yields a new cursor.
