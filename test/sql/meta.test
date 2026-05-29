@@ -1,6 +1,6 @@
 # name: test/sql/meta.test
 # description: Test the github_rest function against the /meta endpoint
-# group: [github_client]
+# group: [sql]
 
 require-env GITHUB_TOKEN
 

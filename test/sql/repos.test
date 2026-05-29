@@ -1,6 +1,6 @@
 # name: test/sql/repos.test
 # description: Test pagination by listing all repos owned by bored-engineer
-# group: [github_client]
+# group: [sql]
 
 require-env GITHUB_TOKEN
 

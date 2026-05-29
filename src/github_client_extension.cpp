@@ -33,16 +33,14 @@ static string_t LookupRESTType(const string_t &name, bool list, Vector &result) 
 }
 
 inline void GitHubRESTTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t name) {
-		return LookupRESTType(name, false, result);
-	});
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(),
+	                                           [&](string_t name) { return LookupRESTType(name, false, result); });
 }
 
 inline void GitHubRESTTypeFunctionWithList(DataChunk &args, ExpressionState &state, Vector &result) {
-	BinaryExecutor::Execute<string_t, bool, string_t>(args.data[0], args.data[1], result, args.size(),
-	                                                  [&](string_t name, bool list) {
-		                                                  return LookupRESTType(name, list, result);
-	                                                  });
+	BinaryExecutor::Execute<string_t, bool, string_t>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [&](string_t name, bool list) { return LookupRESTType(name, list, result); });
 }
 
 // Parses the rel="next' URL from the Link header returned by GitHub API
@@ -229,8 +227,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
 	    ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
-	github_rest_type_set.AddFunction(
-	    ScalarFunction({LogicalType::VARCHAR, LogicalType::BOOLEAN}, LogicalType::VARCHAR, GitHubRESTTypeFunctionWithList));
+	github_rest_type_set.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::BOOLEAN}, LogicalType::VARCHAR,
+	                                                GitHubRESTTypeFunctionWithList));
 	loader.RegisterFunction(github_rest_type_set);
 }
 
