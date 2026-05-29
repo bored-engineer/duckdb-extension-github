@@ -16,7 +16,7 @@ CREATE SECRET github (
 # Fetch LICENSE from the default branch (3-arg overload) and verify it contains expected text.
 query I
 SELECT contains(
-    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE'),
+    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE')::VARCHAR,
     'Permission is hereby granted'
 );
 ----

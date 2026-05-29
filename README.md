@@ -189,7 +189,7 @@ Fetches the raw contents of a file from a GitHub repository. Makes a GET request
 | `path` | `VARCHAR` | required | Path to the file within the repository |
 | `ref` | `VARCHAR` | — | Branch, tag, or commit SHA to read from (defaults to the repository's default branch) |
 
-**Returns:** `VARCHAR` — raw file contents.
+**Returns:** `BLOB` — raw file contents. Cast to `VARCHAR` if you need text operations (e.g. `::VARCHAR`).
 
 **Examples:**
 
@@ -199,6 +199,9 @@ SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.
 
 -- Read a file from a specific branch or tag
 SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md', 'main');
+
+-- Cast to VARCHAR for text operations
+SELECT length(github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md')::VARCHAR);
 ```
 
 ---

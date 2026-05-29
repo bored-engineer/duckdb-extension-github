@@ -792,11 +792,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(github_graphql_function);
 	ScalarFunctionSet github_contents_raw_set("github_contents_raw");
 	github_contents_raw_set.AddFunction(ScalarFunction(
-	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
 	    GitHubContentsRawFunction, GitHubContentsRawBind));
 	github_contents_raw_set.AddFunction(ScalarFunction(
 	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	    LogicalType::VARCHAR, GitHubContentsRawFunction, GitHubContentsRawBind));
+	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
 	loader.RegisterFunction(github_contents_raw_set);
 	loader.RegisterFunction(
 	    ScalarFunction("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
