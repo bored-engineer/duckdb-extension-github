@@ -1,0 +1,36 @@
+# name: test/sql/graphql.test
+# description: Test github_graphql cursor pagination through bored-engineer's repositories
+# group: [sql]
+
+require-env GITHUB_TOKEN
+
+require github_client
+
+require json
+
+statement ok
+CREATE SECRET github (
+    TYPE http,
+    BEARER_TOKEN '${GITHUB_TOKEN}',
+    SCOPE 'https://api.github.com'
+);
+
+# bored-engineer has more than 100 public repositories, so paginating 100 at a time
+# requires the $endCursor variable to be injected across at least 2 requests.
+query I
+SELECT count(*) > 100 FROM (
+    SELECT UNNEST(body->>'$.data.user.repositories.nodes[*].name') AS name
+    FROM github_graphql(
+        'query($login: String!, $endCursor: String) {
+            user(login: $login) {
+                repositories(first: 100, after: $endCursor) {
+                    nodes { name }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }',
+        variables = {'login': 'bored-engineer'}
+    )
+);
+----
+true
