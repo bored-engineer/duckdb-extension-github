@@ -564,6 +564,7 @@ struct GitHubGraphQLBindData : public GitHubRequestBindData {
 	string query;
 	string variables_json;
 	string cursor;
+	bool fatal_errors = true;
 	bool done = false;
 };
 
@@ -575,6 +576,11 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
 	auto variables_param = input.named_parameters.find("variables");
 	if (variables_param != input.named_parameters.end()) {
 		result->variables_json = ValueToJSON(variables_param->second);
+	}
+
+	auto fatal_errors_param = input.named_parameters.find("fatal_errors");
+	if (fatal_errors_param != input.named_parameters.end()) {
+		result->fatal_errors = fatal_errors_param->second.GetValue<bool>();
 	}
 
 	std::string host = BindCommonRequestData(context, input, *result);
@@ -604,9 +610,9 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	}
 	yyjson_val *root = yyjson_doc_get_root(doc);
 
-	// Surface any GraphQL errors returned in the response
+	// Surface any GraphQL errors returned in the response (unless fatal_errors is disabled)
 	yyjson_val *errors = yyjson_is_obj(root) ? yyjson_obj_get(root, "errors") : nullptr;
-	if (errors && yyjson_is_arr(errors) && yyjson_arr_size(errors) > 0) {
+	if (data.fatal_errors && errors && yyjson_is_arr(errors) && yyjson_arr_size(errors) > 0) {
 		char *errors_json = yyjson_val_write(errors, 0, nullptr);
 		std::string message = errors_json ? errors_json : "";
 		free(errors_json);
@@ -660,6 +666,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_graphql_function.named_parameters["host"] = LogicalType::VARCHAR;
 	github_graphql_function.named_parameters["variables"] = LogicalType::ANY;
 	github_graphql_function.named_parameters["headers"] = LogicalType::ANY;
+	github_graphql_function.named_parameters["fatal_errors"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(github_graphql_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
