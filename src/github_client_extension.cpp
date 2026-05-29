@@ -361,6 +361,15 @@ static Value BuildHeadersMapValue(const GitHubResponseHeaders &resp_headers) {
 struct GitHubRESTBindData : public GitHubRequestBindData {
 	string host;
 	bool paginate = true;
+	// Rows buffered from the current page. A JSON-array response yields one body per
+	// element; any other response yields a single body. All rows from one page share
+	// the same url/headers/ratelimit/request_id metadata.
+	vector<string> pending_bodies;
+	idx_t pending_offset = 0;
+	Value page_url;
+	Value page_headers;
+	Value page_ratelimit;
+	Value page_request_id;
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -392,32 +401,69 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &data = const_cast<GitHubRESTBindData &>(data_p.bind_data->Cast<GitHubRESTBindData>());
 
-	// If there's no next page, we're done!
-	if (data.url.empty()) {
-		return;
-	}
-
-	std::string body;
-	GitHubResponseHeaders resp_headers;
-	ExecuteGitHubRequest(data, nullptr, body, resp_headers);
-
-	// Store the output
-	output.SetValue(0, 0, Value(data.url));
-	output.SetValue(1, 0, Value(body));
-	output.SetValue(2, 0, BuildHeadersMapValue(resp_headers));
-	output.SetValue(3, 0, BuildRateLimitValue(resp_headers));
-	output.SetValue(4, 0, RequestIdValue(resp_headers));
-	output.SetCardinality(1);
-
-	// Check for the "Link" header to see if there's a next page (unless pagination is disabled)
-	std::string next_url;
-	if (data.paginate) {
-		next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
-		if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
-			throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
+	// Fetch pages until we have buffered rows to emit, or there are no more pages.
+	// (A page may be an empty array, which yields no rows but can still have a next page.)
+	while (data.pending_offset >= data.pending_bodies.size()) {
+		if (data.url.empty()) {
+			return;
 		}
+
+		std::string body;
+		GitHubResponseHeaders resp_headers;
+		ExecuteGitHubRequest(data, nullptr, body, resp_headers);
+
+		// Metadata shared by every row produced from this page
+		data.page_url = Value(data.url);
+		data.page_headers = BuildHeadersMapValue(resp_headers);
+		data.page_ratelimit = BuildRateLimitValue(resp_headers);
+		data.page_request_id = RequestIdValue(resp_headers);
+
+		// An array response yields one row per element; anything else yields the whole body
+		data.pending_bodies.clear();
+		data.pending_offset = 0;
+		yyjson_doc *doc = yyjson_read(body.c_str(), body.size(), 0);
+		yyjson_val *root = doc ? yyjson_doc_get_root(doc) : nullptr;
+		if (root && yyjson_is_arr(root)) {
+			yyjson_arr_iter it;
+			yyjson_arr_iter_init(root, &it);
+			yyjson_val *item;
+			while ((item = yyjson_arr_iter_next(&it))) {
+				char *item_json = yyjson_val_write(item, 0, nullptr);
+				if (item_json) {
+					data.pending_bodies.emplace_back(item_json);
+					free(item_json);
+				}
+			}
+		} else {
+			data.pending_bodies.emplace_back(body);
+		}
+		if (doc) {
+			yyjson_doc_free(doc);
+		}
+
+		// Check for the "Link" header to see if there's a next page (unless pagination is disabled)
+		std::string next_url;
+		if (data.paginate) {
+			next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
+			if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
+				throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
+			}
+		}
+		data.url = next_url;
 	}
-	data.url = next_url;
+
+	// Emit buffered rows, up to the chunk capacity
+	idx_t count = 0;
+	while (data.pending_offset < data.pending_bodies.size() && count < STANDARD_VECTOR_SIZE) {
+		output.SetValue(0, count, data.page_url);
+		output.SetValue(1, count, Value(data.pending_bodies[data.pending_offset]));
+		output.SetValue(2, count, data.page_headers);
+		output.SetValue(3, count, data.page_ratelimit);
+		output.SetValue(4, count, data.page_request_id);
+		data.pending_offset++;
+		count++;
+	}
+	output.SetCardinality(count);
 }
 
 // Converts a DuckDB Value into a yyjson mutable value owned by doc (used for GraphQL variables).
