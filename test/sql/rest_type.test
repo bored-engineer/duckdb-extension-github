@@ -1,0 +1,29 @@
+# name: test/sql/rest_type.test
+# description: Test the github_rest_type scalar function
+# group: [sql]
+
+require github_client
+
+# Single-argument form returns the JSON type schema
+query I
+SELECT github_rest_type('actions-artifact-and-log-retention');
+----
+{"days":"INT64"}
+
+# Two-argument form with list=false returns the same schema
+query I
+SELECT github_rest_type('actions-artifact-and-log-retention', false);
+----
+{"days":"INT64"}
+
+# Two-argument form with list=true wraps the schema in an array
+query I
+SELECT github_rest_type('actions-artifact-and-log-retention', true);
+----
+[{"days":"INT64"}]
+
+# Unknown type names raise an error
+statement error
+SELECT github_rest_type('not-a-real-type');
+----
+Unknown type: not-a-real-type
