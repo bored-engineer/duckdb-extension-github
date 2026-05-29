@@ -81,6 +81,7 @@ static size_t CurlWriteCallback(char *ptr, size_t size, size_t nmemb, void *user
 
 struct GitHubResponseHeaders {
 	std::string link;
+	std::string request_id;
 	std::string ratelimit_limit;
 	std::string ratelimit_remaining;
 	std::string ratelimit_used;
@@ -105,6 +106,7 @@ static size_t CurlHeaderCallback(char *buffer, size_t size, size_t nitems, void 
 	};
 
 	match_prefix("link: ", resp->link) ||
+	    match_prefix("x-github-request-id: ", resp->request_id) ||
 	    match_prefix("x-ratelimit-limit: ", resp->ratelimit_limit) ||
 	    match_prefix("x-ratelimit-remaining: ", resp->ratelimit_remaining) ||
 	    match_prefix("x-ratelimit-used: ", resp->ratelimit_used) ||
@@ -242,7 +244,7 @@ static std::string BindCommonRequestData(ClientContext &context, TableFunctionBi
 	return host;
 }
 
-// Appends the body/headers/ratelimit result columns common to both table functions.
+// Appends the body/headers/ratelimit/request_id result columns common to both table functions.
 static void AddCommonResultColumns(vector<LogicalType> &return_types, vector<string> &names) {
 	names.emplace_back("body");
 	return_types.emplace_back(LogicalType::JSON());
@@ -256,6 +258,13 @@ static void AddCommonResultColumns(vector<LogicalType> &return_types, vector<str
 	ratelimit_children.emplace_back("reset", LogicalType::TIMESTAMP_S);
 	ratelimit_children.emplace_back("resource", LogicalType::VARCHAR);
 	return_types.emplace_back(LogicalType::STRUCT(std::move(ratelimit_children)));
+	names.emplace_back("request_id");
+	return_types.emplace_back(LogicalType::VARCHAR);
+}
+
+// The X-GitHub-Request-Id header value, or NULL when absent.
+static Value RequestIdValue(const GitHubResponseHeaders &resp_headers) {
+	return resp_headers.request_id.empty() ? Value(LogicalType::VARCHAR) : Value(resp_headers.request_id);
 }
 
 // Performs the HTTP request and returns the response body and parsed headers.
@@ -397,6 +406,7 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	output.SetValue(1, 0, Value(body));
 	output.SetValue(2, 0, BuildHeadersMapValue(resp_headers));
 	output.SetValue(3, 0, BuildRateLimitValue(resp_headers));
+	output.SetValue(4, 0, RequestIdValue(resp_headers));
 	output.SetCardinality(1);
 
 	// Check for the "Link" header to see if there's a next page (unless pagination is disabled)
@@ -647,8 +657,9 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	output.SetValue(0, 0, data_value);
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
 	output.SetValue(2, 0, BuildRateLimitValue(resp_headers));
-	output.SetValue(3, 0, errors_value);
-	output.SetValue(4, 0, warnings_value);
+	output.SetValue(3, 0, RequestIdValue(resp_headers));
+	output.SetValue(4, 0, errors_value);
+	output.SetValue(5, 0, warnings_value);
 	output.SetCardinality(1);
 
 	// Continue paginating while the response reports another page and yields a new cursor.
