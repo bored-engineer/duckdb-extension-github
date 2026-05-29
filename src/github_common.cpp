@@ -157,7 +157,8 @@ std::string BindCommonRequestData(ClientContext &context, TableFunctionBindInput
 	bool is_enterprise = hostname != "api.github.com";
 	std::string host = GitHubScheme() + "://" + hostname;
 
-	result.token = ResolveToken(context, host, is_enterprise);
+	result.host = host;
+	result.is_enterprise = is_enterprise;
 
 	auto accept_param = input.named_parameters.find("accept");
 	result.accept = (accept_param != input.named_parameters.end()) ? accept_param->second.GetValue<string>()

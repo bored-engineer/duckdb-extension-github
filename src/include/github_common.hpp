@@ -22,6 +22,8 @@ struct GitHubResponseHeaders {
 struct GitHubRequestBindData : public TableFunctionData {
 	string url;
 	string token;
+	string host;
+	bool is_enterprise = false;
 	string user_agent;
 	string accept;
 	string api_version;

@@ -178,6 +178,7 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
 	}
 
 	std::string host = BindCommonRequestData(context, input, *result);
+	result->host = host;
 	result->url = host + "/graphql";
 
 	names.emplace_back("url");
@@ -196,6 +197,10 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 
 	if (data.done) {
 		return;
+	}
+
+	if (data.token.empty()) {
+		data.token = ResolveToken(context, data.host, data.is_enterprise);
 	}
 
 	std::string post_body = BuildGraphQLBody(data.query, data.variables_json, data.cursor);

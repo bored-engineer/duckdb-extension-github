@@ -34,7 +34,6 @@ static std::string ParseLinkNextURL(const std::string &link_header_content) {
 }
 
 struct GitHubRESTBindData : public GitHubRequestBindData {
-	string host;
 	bool paginate = true;
 	string extract;
 };
@@ -81,6 +80,10 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 
 	if (data.url.empty()) {
 		return;
+	}
+
+	if (data.token.empty()) {
+		data.token = ResolveToken(context, data.host, data.is_enterprise);
 	}
 
 	std::string body;
