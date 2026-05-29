@@ -1017,6 +1017,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user macro: %s", result->GetError());
 	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_user_followers(username) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
+	    "FROM github_rest('/users/' || username || '/followers?per_page=100')"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_followers macro: %s", result->GetError());
+	}
 }
 
 void GithubExtension::Load(ExtensionLoader &loader) {
