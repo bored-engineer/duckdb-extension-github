@@ -15,7 +15,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
 
-set(EXTENSION_SOURCES src/github_extension.cpp)
+set(EXTENSION_SOURCES
+    src/github_extension.cpp
+    src/github_common.cpp
+    src/github_rest.cpp
+    src/github_graphql.cpp
+    src/github_contents.cpp
+    src/github_rest_type.cpp
+    src/github_macros.cpp
+)
 
 # Common libraries needed for both targets
 set(COMMON_LIBS
