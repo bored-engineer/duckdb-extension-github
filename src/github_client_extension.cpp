@@ -156,35 +156,6 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	result->host = host;
 	result->url = host + path;
 
-	// Append any extra query parameters from the named 'query' argument (MAP or STRUCT)
-	auto query_param = input.named_parameters.find("query");
-	if (query_param != input.named_parameters.end()) {
-		auto &qval = query_param->second;
-		auto type_id = qval.type().id();
-		bool has_query = result->url.find('?') != std::string::npos;
-
-		auto append_pair = [&](const std::string &k, const std::string &v) {
-			char *ek = curl_easy_escape(nullptr, k.c_str(), k.size());
-			char *ev = curl_easy_escape(nullptr, v.c_str(), v.size());
-			result->url += (has_query ? "&" : "?");
-			result->url += ek;
-			result->url += "=";
-			result->url += ev;
-			curl_free(ek);
-			curl_free(ev);
-			has_query = true;
-		};
-
-		if (type_id == LogicalTypeId::STRUCT) {
-			auto &children = StructValue::GetChildren(qval);
-			for (idx_t i = 0; i < children.size(); i++) {
-				append_pair(StructType::GetChildName(qval.type(), i), children[i].GetValue<string>());
-			}
-		} else {
-			throw InvalidInputException("'query' must be a STRUCT, got %s", qval.type().ToString());
-		}
-	}
-
 	// Resolve the bearer token: DuckDB secrets take priority, then environment variables.
 	// When GH_HOST is set, GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN are checked first.
 	std::string token;
@@ -384,8 +355,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
-	github_rest_function.named_parameters["query"] = LogicalType::ANY;
-	github_rest_function.named_parameters["headers"] = LogicalType::ANY;
+github_rest_function.named_parameters["headers"] = LogicalType::ANY;
 	loader.RegisterFunction(github_rest_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
