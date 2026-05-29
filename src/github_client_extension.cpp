@@ -123,6 +123,26 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	result->host = host;
 	result->url = host + path;
 
+	// Append any extra query parameters from the named 'query' map
+	auto query_param = input.named_parameters.find("query");
+	if (query_param != input.named_parameters.end()) {
+		bool has_query = result->url.find('?') != std::string::npos;
+		for (auto &entry : MapValue::GetChildren(query_param->second)) {
+			auto &kv = StructValue::GetChildren(entry);
+			std::string k = kv[0].GetValue<string>();
+			std::string v = kv[1].GetValue<string>();
+			char *ek = curl_easy_escape(nullptr, k.c_str(), k.size());
+			char *ev = curl_easy_escape(nullptr, v.c_str(), v.size());
+			result->url += (has_query ? "&" : "?");
+			result->url += ek;
+			result->url += "=";
+			result->url += ev;
+			curl_free(ek);
+			curl_free(ev);
+			has_query = true;
+		}
+	}
+
 	// Resolve the bearer token: DuckDB secrets take priority, then environment variables.
 	// When GH_HOST is set, GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN are checked first.
 	std::string token;
@@ -268,6 +288,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
+	github_rest_function.named_parameters["query"] = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 	loader.RegisterFunction(github_rest_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
