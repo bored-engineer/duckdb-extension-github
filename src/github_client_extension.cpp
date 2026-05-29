@@ -81,6 +81,7 @@ struct GitHubResponseHeaders {
 	std::string ratelimit_used;
 	std::string ratelimit_reset;
 	std::string ratelimit_resource;
+	vector<pair<std::string, std::string>> all;
 };
 
 static size_t CurlHeaderCallback(char *buffer, size_t size, size_t nitems, void *userdata) {
@@ -104,6 +105,17 @@ static size_t CurlHeaderCallback(char *buffer, size_t size, size_t nitems, void 
 	    match_prefix("x-ratelimit-used: ", resp->ratelimit_used) ||
 	    match_prefix("x-ratelimit-reset: ", resp->ratelimit_reset) ||
 	    match_prefix("x-ratelimit-resource: ", resp->ratelimit_resource);
+
+	// Collect all "name: value" headers (skip status line and blank terminator)
+	auto colon = header.find(": ");
+	if (colon != std::string::npos) {
+		std::string name = StringUtil::Lower(header.substr(0, colon));
+		std::string value = header.substr(colon + 2);
+		while (!value.empty() && (value.back() == '\r' || value.back() == '\n')) {
+			value.pop_back();
+		}
+		resp->all.emplace_back(std::move(name), std::move(value));
+	}
 
 	return size * nitems;
 }
@@ -254,6 +266,8 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("body");
 	return_types.emplace_back(LogicalType::JSON());
+	names.emplace_back("headers");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	names.emplace_back("ratelimit");
 	child_list_t<LogicalType> ratelimit_children;
 	ratelimit_children.emplace_back("limit", LogicalType::UBIGINT);
@@ -342,10 +356,19 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	                                               ? Value(LogicalType::VARCHAR)
 	                                               : Value(resp_headers.ratelimit_resource));
 
+	// Build the headers map value
+	vector<Value> header_keys, header_vals;
+	for (auto &kv : resp_headers.all) {
+		header_keys.emplace_back(kv.first);
+		header_vals.emplace_back(kv.second);
+	}
+
 	// Store the output
 	output.SetValue(0, 0, Value(data.url));
 	output.SetValue(1, 0, Value(body));
-	output.SetValue(2, 0, Value::STRUCT(std::move(ratelimit_values)));
+	output.SetValue(2, 0, Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                                 std::move(header_keys), std::move(header_vals)));
+	output.SetValue(3, 0, Value::STRUCT(std::move(ratelimit_values)));
 	output.SetCardinality(1);
 
 	// Check for the "Link" header to see if there's a next page
