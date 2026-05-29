@@ -1,0 +1,52 @@
+# name: test/sql/contents.test
+# description: Test github_contents fetching parsed file metadata from a repository
+# group: [sql]
+
+require-env GITHUB_TOKEN
+
+require github
+
+statement ok
+CREATE SECRET github (
+    TYPE http,
+    BEARER_TOKEN '${GITHUB_TOKEN}',
+    SCOPE 'https://api.github.com'
+);
+
+# Basic fetch: verify type and name for a known file.
+query TT
+SELECT type, name FROM github_contents('bored-engineer', 'duckdb-extension-github', 'LICENSE');
+----
+file	LICENSE
+
+# Content should decode to the raw file bytes (matching github_contents_raw).
+query I
+SELECT content = github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE')
+FROM github_contents('bored-engineer', 'duckdb-extension-github', 'LICENSE');
+----
+true
+
+# Explicit ref parameter.
+query TT
+SELECT type, name FROM github_contents('bored-engineer', 'duckdb-extension-github', 'LICENSE', ref='main');
+----
+file	LICENSE
+
+# Explicit api.github.com host.
+query T
+SELECT type FROM github_contents('bored-engineer', 'duckdb-extension-github', 'LICENSE', host='api.github.com');
+----
+file
+
+# size is a positive integer.
+query I
+SELECT size > 0 FROM github_contents('bored-engineer', 'duckdb-extension-github', 'LICENSE');
+----
+true
+
+# sha, url, git_url, download_url are non-empty strings.
+query IIII
+SELECT sha IS NOT NULL, url IS NOT NULL, git_url IS NOT NULL, download_url IS NOT NULL
+FROM github_contents('bored-engineer', 'duckdb-extension-github', 'LICENSE');
+----
+true	true	true	true
