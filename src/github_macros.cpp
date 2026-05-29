@@ -918,14 +918,14 @@ void RegisterGitHubMacros(ExtensionLoader &loader) {
 
 	run("CREATE OR REPLACE MACRO github_gist(gist_id) AS TABLE "
 	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	    "SELECT json_transform(data, github_rest_type('gist-simple')) AS r "
 	    "FROM github_rest('/gists/' || gist_id)"
 	    ") _",
 	    "github_gist");
 
 	run("CREATE OR REPLACE MACRO github_user_gists(username, since := NULL) AS TABLE "
 	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	    "SELECT json_transform(data, github_rest_type('gist-simple')) AS r "
 	    "FROM github_rest('/users/' || username || '/gists',"
 	    " query := {'per_page': '100', 'since': since})"
 	    ") _",
@@ -933,7 +933,7 @@ void RegisterGitHubMacros(ExtensionLoader &loader) {
 
 	run("CREATE OR REPLACE MACRO github_gist_forks(gist_id) AS TABLE "
 	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	    "SELECT json_transform(data, github_rest_type('gist-simple')) AS r "
 	    "FROM github_rest('/gists/' || gist_id || '/forks', query := {'per_page': '100'})"
 	    ") _",
 	    "github_gist_forks");
@@ -947,7 +947,7 @@ void RegisterGitHubMacros(ExtensionLoader &loader) {
 
 	run("CREATE OR REPLACE MACRO github_gist_revision(gist_id, sha) AS TABLE "
 	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	    "SELECT json_transform(data, github_rest_type('gist-simple')) AS r "
 	    "FROM github_rest('/gists/' || gist_id || '/' || sha)"
 	    ") _",
 	    "github_gist_revision");

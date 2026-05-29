@@ -60,6 +60,9 @@ func convertType(schema *openapi3.Schema) string {
 		}
 		entries := make(map[string]string)
 		convertStruct(entries, schema)
+		if len(entries) == 0 {
+			return `"JSON"`
+		}
 		names := slices.Collect(maps.Keys(entries))
 		slices.Sort(names)
 		var sb strings.Builder
