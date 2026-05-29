@@ -8,13 +8,6 @@ require github_client
 
 require json
 
-statement ok
-CREATE SECRET github (
-    TYPE http,
-    BEARER_TOKEN '${GITHUB_TOKEN}',
-    SCOPE 'https://api.github.com'
-);
-
 # bored-engineer has more than 100 public repositories, requiring at least 2 paginated requests
 query I
 SELECT count(*) > 100 FROM (

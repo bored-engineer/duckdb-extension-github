@@ -107,38 +107,62 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 
 	// Use GH_HOST to allow overriding the host for GitHub Enterprise, defaulting to api.github.com
 	const char *gh_host_env = std::getenv("GH_HOST");
+	bool is_enterprise = gh_host_env && gh_host_env[0];
 	std::string host = "https://";
-	host += (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
+	host += is_enterprise ? gh_host_env : "api.github.com";
 
 	// Set the URL to the combined host and path
 	result->host = host;
 	result->url = host + path;
 
-	// Use the SecretManager to find the 'http' bearer token for GitHub
-	auto &secret_manager = SecretManager::Get(context);
-	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	auto secret_match = secret_manager.LookupSecret(transaction, host + "/", "http");
-
-	if (!secret_match.HasMatch()) {
-		throw InvalidInputException(
-		    "No GitHub secret found. Please create a 'http' secret with 'CREATE SECRET' first.");
+	// Resolve the bearer token: env vars take priority over DuckDB secrets.
+	// When GH_HOST is set, GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN are checked first.
+	std::string token;
+	auto try_env = [](const char *name) -> const char * {
+		const char *v = std::getenv(name);
+		return (v && v[0]) ? v : nullptr;
+	};
+	if (is_enterprise) {
+		if (const char *v = try_env("GH_ENTERPRISE_TOKEN")) {
+			token = v;
+		} else if (const char *v = try_env("GITHUB_ENTERPRISE_TOKEN")) {
+			token = v;
+		}
 	}
-
-	auto &secret = secret_match.GetSecret();
-	if (secret.GetType() != "http") {
-		throw InvalidInputException("Invalid secret type. Expected 'http', got '%s'", secret.GetType());
+	if (token.empty()) {
+		if (const char *v = try_env("GH_TOKEN")) {
+			token = v;
+		} else if (const char *v = try_env("GITHUB_TOKEN")) {
+			token = v;
+		}
 	}
+	if (token.empty()) {
+		auto &secret_manager = SecretManager::Get(context);
+		auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+		auto secret_match = secret_manager.LookupSecret(transaction, host + "/", "http");
 
-	const auto *kv_secret = dynamic_cast<const KeyValueSecret *>(&secret);
-	if (!kv_secret) {
-		throw InvalidInputException("Invalid secret type for GitHub secret");
-	}
+		if (!secret_match.HasMatch()) {
+			throw InvalidInputException("No GitHub token found. Set GH_TOKEN or GITHUB_TOKEN, or create an 'http' "
+			                            "secret with 'CREATE SECRET'.");
+		}
 
-	Value token_value;
-	if (!kv_secret->TryGetValue("bearer_token", token_value)) {
-		throw InvalidInputException("'bearer_token' not found for GitHub secret");
+		auto &secret = secret_match.GetSecret();
+		if (secret.GetType() != "http") {
+			throw InvalidInputException("Invalid secret type. Expected 'http', got '%s'", secret.GetType());
+		}
+
+		const auto *kv_secret = dynamic_cast<const KeyValueSecret *>(&secret);
+		if (!kv_secret) {
+			throw InvalidInputException("Invalid secret type for GitHub secret");
+		}
+
+		Value token_value;
+		if (!kv_secret->TryGetValue("bearer_token", token_value)) {
+			throw InvalidInputException("'bearer_token' not found for GitHub secret");
+		}
+		token = token_value.ToString();
 	}
-	result->token = token_value.ToString();
+	result->token = token;
 	result->user_agent = StringUtil::Format("%s %s", context.db->config.UserAgent(), DuckDB::SourceID());
 
 	// Set the return types and names
