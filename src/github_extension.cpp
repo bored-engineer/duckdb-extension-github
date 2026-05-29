@@ -766,7 +766,7 @@ struct GitHubContentsBindData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> GitHubContentsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                                   vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<GitHubContentsBindData>();
 
 	result->owner = input.inputs[0].GetValue<string>();
@@ -842,9 +842,10 @@ static void GitHubContentsEmitRow(yyjson_val *obj, DataChunk &output, idx_t row)
 	output.SetValue(0, row, get_str("type"));
 
 	yyjson_val *size_val = yyjson_obj_get(obj, "size");
-	output.SetValue(1, row, (size_val && yyjson_is_num(size_val))
-	                            ? Value::UBIGINT(static_cast<uint64_t>(yyjson_get_num(size_val)))
-	                            : Value(LogicalType::UBIGINT));
+	output.SetValue(1, row,
+	                (size_val && yyjson_is_num(size_val))
+	                    ? Value::UBIGINT(static_cast<uint64_t>(yyjson_get_num(size_val)))
+	                    : Value(LogicalType::UBIGINT));
 
 	output.SetValue(2, row, get_str("name"));
 	output.SetValue(3, row, get_str("path"));
@@ -936,8 +937,8 @@ static void GitHubContentsRawFunction(DataChunk &args, ExpressionState &state, V
 	TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
 	    args.data[0], args.data[1], args.data[2], result, args.size(),
 	    [&](string_t owner, string_t repo, string_t path) -> string_t {
-		    std::string url = data.host + "/repos/" + owner.GetString() + "/" + repo.GetString() + "/contents/" +
-		                      path.GetString();
+		    std::string url =
+		        data.host + "/repos/" + owner.GetString() + "/" + repo.GetString() + "/contents/" + path.GetString();
 		    if (!data.ref.empty()) {
 			    url += "?ref=" + data.ref;
 		    }
@@ -983,12 +984,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_contents_function.named_parameters["include_root"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(github_contents_function);
 	ScalarFunctionSet github_contents_raw_set("github_contents_raw");
-	github_contents_raw_set.AddFunction(ScalarFunction(
-	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
-	github_contents_raw_set.AddFunction(ScalarFunction(
-	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
+	github_contents_raw_set.AddFunction(
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
+	                   GitHubContentsRawFunction, GitHubContentsRawBind));
+	github_contents_raw_set.AddFunction(
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                   LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
 	github_contents_raw_set.AddFunction(ScalarFunction(
 	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
