@@ -45,6 +45,18 @@ inline void GitHubRESTTypeFunctionWithList(DataChunk &args, ExpressionState &sta
 	                                                  });
 }
 
+static unique_ptr<FunctionData> GitHubRESTTypeBind(ClientContext &context, ScalarFunction &bound_function,
+                                                   vector<unique_ptr<Expression>> &arguments) {
+	if (arguments.size() == 2) {
+		auto &alias = arguments[1]->alias;
+		if (!alias.empty() && alias != "list") {
+			throw InvalidInputException("Unknown named parameter '%s' for github_rest_type — did you mean 'list'?",
+			                            alias);
+		}
+	}
+	return nullptr;
+}
+
 // Parses the rel="next' URL from the Link header returned by GitHub API
 static std::string ParseLinkNextURL(const std::string &link_header_content) {
 	auto split_outer = StringUtil::Split(link_header_content, ',');
@@ -229,7 +241,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_rest_type_set.AddFunction(
 	    ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
 	github_rest_type_set.AddFunction(
-	    ScalarFunction({LogicalType::VARCHAR, LogicalType::BOOLEAN}, LogicalType::VARCHAR, GitHubRESTTypeFunctionWithList));
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::BOOLEAN}, LogicalType::VARCHAR, GitHubRESTTypeFunctionWithList,
+	                   GitHubRESTTypeBind));
 	loader.RegisterFunction(github_rest_type_set);
 }
 
