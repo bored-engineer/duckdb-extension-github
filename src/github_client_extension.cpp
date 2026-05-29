@@ -105,8 +105,7 @@ static size_t CurlHeaderCallback(char *buffer, size_t size, size_t nitems, void 
 		return true;
 	};
 
-	match_prefix("link: ", resp->link) ||
-	    match_prefix("x-github-request-id: ", resp->request_id) ||
+	match_prefix("link: ", resp->link) || match_prefix("x-github-request-id: ", resp->request_id) ||
 	    match_prefix("x-ratelimit-limit: ", resp->ratelimit_limit) ||
 	    match_prefix("x-ratelimit-remaining: ", resp->ratelimit_remaining) ||
 	    match_prefix("x-ratelimit-used: ", resp->ratelimit_used) ||
@@ -139,7 +138,8 @@ struct GitHubRequestBindData : public TableFunctionData {
 
 static const char *GitHubUserAgent() {
 #ifdef EXT_VERSION_GITHUBCLIENT
-	return "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT " (+https://github.com/bored-engineer/duckdb-extension-github)";
+	return "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT
+	       " (+https://github.com/bored-engineer/duckdb-extension-github)";
 #else
 	return "duckdb-extension-github/unknown (+https://github.com/bored-engineer/duckdb-extension-github)";
 #endif
@@ -269,8 +269,8 @@ static Value RequestIdValue(const GitHubResponseHeaders &resp_headers) {
 
 // Performs the HTTP request and returns the response body and parsed headers.
 // A non-null post_body issues a POST (with Content-Type: application/json); otherwise a GET.
-static void ExecuteGitHubRequest(const GitHubRequestBindData &data, const std::string *post_body,
-                                 std::string &body, GitHubResponseHeaders &resp_headers) {
+static void ExecuteGitHubRequest(const GitHubRequestBindData &data, const std::string *post_body, std::string &body,
+                                 GitHubResponseHeaders &resp_headers) {
 	CURL *curl = curl_easy_init();
 	if (!curl) {
 		throw InvalidInputException("Failed to initialize curl");
@@ -338,13 +338,13 @@ static Value BuildRateLimitValue(const GitHubResponseHeaders &resp_headers) {
 	ratelimit_values.emplace_back("limit", parse_ubigint_header(resp_headers.ratelimit_limit));
 	ratelimit_values.emplace_back("remaining", parse_ubigint_header(resp_headers.ratelimit_remaining));
 	ratelimit_values.emplace_back("used", parse_ubigint_header(resp_headers.ratelimit_used));
-	ratelimit_values.emplace_back("reset", resp_headers.ratelimit_reset.empty()
-	                                           ? Value(LogicalType::TIMESTAMP_S)
-	                                           : Value::TIMESTAMPSEC(timestamp_sec_t(
-	                                                 std::stoll(resp_headers.ratelimit_reset))));
+	ratelimit_values.emplace_back("reset",
+	                              resp_headers.ratelimit_reset.empty()
+	                                  ? Value(LogicalType::TIMESTAMP_S)
+	                                  : Value::TIMESTAMPSEC(timestamp_sec_t(std::stoll(resp_headers.ratelimit_reset))));
 	ratelimit_values.emplace_back("resource", resp_headers.ratelimit_resource.empty()
-	                                               ? Value(LogicalType::VARCHAR)
-	                                               : Value(resp_headers.ratelimit_resource));
+	                                              ? Value(LogicalType::VARCHAR)
+	                                              : Value(resp_headers.ratelimit_resource));
 	return Value::STRUCT(std::move(ratelimit_values));
 }
 
@@ -600,7 +600,7 @@ struct GitHubGraphQLBindData : public GitHubRequestBindData {
 };
 
 static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+                                                  vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<GitHubGraphQLBindData>();
 
 	result->query = input.inputs[0].GetValue<string>();
