@@ -74,17 +74,37 @@ static size_t CurlWriteCallback(char *ptr, size_t size, size_t nmemb, void *user
 	return size * nmemb;
 }
 
+struct GitHubResponseHeaders {
+	std::string link;
+	std::string ratelimit_limit;
+	std::string ratelimit_remaining;
+	std::string ratelimit_used;
+	std::string ratelimit_reset;
+	std::string ratelimit_resource;
+};
+
 static size_t CurlHeaderCallback(char *buffer, size_t size, size_t nitems, void *userdata) {
-	auto *link_header = static_cast<std::string *>(userdata);
+	auto *resp = static_cast<GitHubResponseHeaders *>(userdata);
 	std::string header(buffer, size * nitems);
-	const std::string prefix = "link: ";
-	std::string lower_header = StringUtil::Lower(header.substr(0, prefix.size()));
-	if (lower_header == prefix) {
-		*link_header = header.substr(prefix.size());
-		while (!link_header->empty() && (link_header->back() == '\r' || link_header->back() == '\n')) {
-			link_header->pop_back();
+
+	auto match_prefix = [&](const std::string &prefix, std::string &out) -> bool {
+		if (StringUtil::Lower(header.substr(0, prefix.size())) != prefix) {
+			return false;
 		}
-	}
+		out = header.substr(prefix.size());
+		while (!out.empty() && (out.back() == '\r' || out.back() == '\n')) {
+			out.pop_back();
+		}
+		return true;
+	};
+
+	match_prefix("link: ", resp->link) ||
+	    match_prefix("x-ratelimit-limit: ", resp->ratelimit_limit) ||
+	    match_prefix("x-ratelimit-remaining: ", resp->ratelimit_remaining) ||
+	    match_prefix("x-ratelimit-used: ", resp->ratelimit_used) ||
+	    match_prefix("x-ratelimit-reset: ", resp->ratelimit_reset) ||
+	    match_prefix("x-ratelimit-resource: ", resp->ratelimit_resource);
+
 	return size * nitems;
 }
 
@@ -234,6 +254,14 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("body");
 	return_types.emplace_back(LogicalType::JSON());
+	names.emplace_back("ratelimit");
+	child_list_t<LogicalType> ratelimit_children;
+	ratelimit_children.emplace_back("limit", LogicalType::BIGINT);
+	ratelimit_children.emplace_back("remaining", LogicalType::BIGINT);
+	ratelimit_children.emplace_back("used", LogicalType::BIGINT);
+	ratelimit_children.emplace_back("reset", LogicalType::BIGINT);
+	ratelimit_children.emplace_back("resource", LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalType::STRUCT(std::move(ratelimit_children)));
 
 	return std::move(result);
 }
@@ -252,7 +280,7 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	}
 
 	std::string body;
-	std::string link_header;
+	GitHubResponseHeaders resp_headers;
 	char errbuf[CURL_ERROR_SIZE] = {0};
 
 	std::string auth_header = "Authorization: Bearer " + data.token;
@@ -275,7 +303,7 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
 	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, CurlHeaderCallback);
-	curl_easy_setopt(curl, CURLOPT_HEADERDATA, &link_header);
+	curl_easy_setopt(curl, CURLOPT_HEADERDATA, &resp_headers);
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
@@ -297,13 +325,27 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 		throw InvalidInputException("HTTP GET request failed. Status: %ld, Reason: %s", http_status, body.c_str());
 	}
 
+	// Build the ratelimit struct value (NULL for any absent headers)
+	auto parse_int_header = [](const std::string &s) -> Value {
+		return s.empty() ? Value(LogicalType::BIGINT) : Value::BIGINT(std::stoll(s));
+	};
+	child_list_t<Value> ratelimit_values;
+	ratelimit_values.emplace_back("limit", parse_int_header(resp_headers.ratelimit_limit));
+	ratelimit_values.emplace_back("remaining", parse_int_header(resp_headers.ratelimit_remaining));
+	ratelimit_values.emplace_back("used", parse_int_header(resp_headers.ratelimit_used));
+	ratelimit_values.emplace_back("reset", parse_int_header(resp_headers.ratelimit_reset));
+	ratelimit_values.emplace_back("resource", resp_headers.ratelimit_resource.empty()
+	                                               ? Value(LogicalType::VARCHAR)
+	                                               : Value(resp_headers.ratelimit_resource));
+
 	// Store the output
 	output.SetValue(0, 0, Value(data.url));
 	output.SetValue(1, 0, Value(body));
+	output.SetValue(2, 0, Value::STRUCT(std::move(ratelimit_values)));
 	output.SetCardinality(1);
 
 	// Check for the "Link" header to see if there's a next page
-	std::string next_url = link_header.empty() ? "" : ParseLinkNextURL(link_header);
+	std::string next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
 	if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
 		throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
 	}
