@@ -16,10 +16,10 @@ CREATE SECRET github (
 );
 
 # bored-engineer has more than 100 public repositories, requiring at least 2 paginated requests.
-# The array response yields one row per repository, so each row's body is a single repository object.
+# The array response yields one row per repository, so each row's data is a single repository object.
 query I
 SELECT count(*) > 100 FROM (
-    SELECT json_transform(body, github_rest_type('repository')) AS r
+    SELECT json_transform(data, github_rest_type('repository')) AS r
     FROM github_rest('/users/bored-engineer/repos?per_page=100')
 );
 ----

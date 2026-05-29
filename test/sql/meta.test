@@ -18,7 +18,7 @@ CREATE SECRET github (
 # The /meta endpoint returns a non-empty list of GitHub SSH keys
 query I
 SELECT count(*) > 0 FROM (
-    SELECT UNNEST(body->>'$.ssh_keys[*]') AS ssh_key
+    SELECT UNNEST(data->>'$.ssh_keys[*]') AS ssh_key
     FROM github_rest('/meta')
 );
 ----

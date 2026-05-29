@@ -19,7 +19,7 @@ CREATE SECRET github (
 # requires the $endCursor variable to be injected across at least 2 requests.
 query I
 SELECT count(*) > 100 FROM (
-    SELECT UNNEST(body->>'$.user.repositories.nodes[*].name') AS name
+    SELECT UNNEST(data->>'$.user.repositories.nodes[*].name') AS name
     FROM github_graphql(
         'query($login: String!, $endCursor: String) {
             user(login: $login) {

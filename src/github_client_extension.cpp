@@ -246,7 +246,7 @@ static std::string BindCommonRequestData(ClientContext &context, TableFunctionBi
 
 // Appends the body/headers/ratelimit/request_id result columns common to both table functions.
 static void AddCommonResultColumns(vector<LogicalType> &return_types, vector<string> &names) {
-	names.emplace_back("body");
+	names.emplace_back("data");
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("headers");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
