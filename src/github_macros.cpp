@@ -553,6 +553,42 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_repo_webhook_delivery");
 
+	run("CREATE OR REPLACE MACRO github_org_webhooks(org) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('org-hook')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/hooks', query := {'per_page': '100'})"
+	    ") _",
+	    "github_org_webhooks");
+
+	run("CREATE OR REPLACE MACRO github_org_webhook(org, hook_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('org-hook')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/hooks/' || hook_id)"
+	    ") _",
+	    "github_org_webhook");
+
+	run("CREATE OR REPLACE MACRO github_org_webhook_config(org, hook_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('webhook-config')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/hooks/' || hook_id || '/config')"
+	    ") _",
+	    "github_org_webhook_config");
+
+	run("CREATE OR REPLACE MACRO github_org_webhook_deliveries(org, hook_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('hook-delivery-item')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/hooks/' || hook_id || '/deliveries',"
+	    " query := {'per_page': '100'})"
+	    ") _",
+	    "github_org_webhook_deliveries");
+
+	run("CREATE OR REPLACE MACRO github_org_webhook_delivery(org, hook_id, delivery_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('hook-delivery')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/hooks/' || hook_id || '/deliveries/' || delivery_id)"
+	    ") _",
+	    "github_org_webhook_delivery");
+
 	run("CREATE OR REPLACE MACRO github_repo_releases(owner, repo) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('release')) AS r "

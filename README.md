@@ -370,6 +370,11 @@ All macros return typed structs via `json_transform` and paginate automatically 
 
 | Macro | API Endpoint |
 |---|---|
+| `github_org_webhooks(org)` | [`GET /orgs/{org}/hooks`](https://docs.github.com/en/rest/orgs/webhooks#list-organization-webhooks) |
+| `github_org_webhook(org, hook_id)` | [`GET /orgs/{org}/hooks/{hook_id}`](https://docs.github.com/en/rest/orgs/webhooks#get-an-organization-webhook) |
+| `github_org_webhook_config(org, hook_id)` | [`GET /orgs/{org}/hooks/{hook_id}/config`](https://docs.github.com/en/rest/orgs/webhooks#get-a-webhook-configuration-for-an-organization) |
+| `github_org_webhook_deliveries(org, hook_id)` | [`GET /orgs/{org}/hooks/{hook_id}/deliveries`](https://docs.github.com/en/rest/orgs/webhooks#list-deliveries-for-an-organization-webhook) |
+| `github_org_webhook_delivery(org, hook_id, delivery_id)` | [`GET /orgs/{org}/hooks/{hook_id}/deliveries/{delivery_id}`](https://docs.github.com/en/rest/orgs/webhooks#get-a-webhook-delivery-for-an-organization-webhook) |
 | `github_repo_webhooks(owner, repo)` | [`GET /repos/{owner}/{repo}/hooks`](https://docs.github.com/en/rest/repos/webhooks#list-repository-webhooks) |
 | `github_repo_webhook(owner, repo, hook_id)` | [`GET /repos/{owner}/{repo}/hooks/{hook_id}`](https://docs.github.com/en/rest/repos/webhooks#get-a-repository-webhook) |
 | `github_repo_webhook_config(owner, repo, hook_id)` | [`GET /repos/{owner}/{repo}/hooks/{hook_id}/config`](https://docs.github.com/en/rest/repos/webhooks#get-a-webhook-configuration-for-a-repository) |
