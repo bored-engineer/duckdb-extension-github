@@ -94,6 +94,7 @@ struct GitHubRESTBindData : public TableFunctionData {
 	string token;
 	string user_agent;
 	string accept;
+	string api_version;
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -174,6 +175,11 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	                     ? accept_param->second.GetValue<string>()
 	                     : "application/vnd.github+json";
 
+	auto api_version_param = input.named_parameters.find("api_version");
+	result->api_version = (api_version_param != input.named_parameters.end())
+	                          ? api_version_param->second.GetValue<string>()
+	                          : "2026-03-10";
+
 #ifdef EXT_VERSION_GITHUBCLIENT
 	result->user_agent = "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT " (+https://github.com/bored-engineer/duckdb-extension-github)";
 #else
@@ -213,7 +219,8 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	headers = curl_slist_append(headers, user_agent_header.c_str());
 	std::string accept_header = "Accept: " + data.accept;
 	headers = curl_slist_append(headers, accept_header.c_str());
-	headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2026-03-10");
+	std::string api_version_header = "X-GitHub-Api-Version: " + data.api_version;
+	headers = curl_slist_append(headers, api_version_header.c_str());
 	headers = curl_slist_append(headers, "X-Github-Next-Global-ID: 1");
 
 	curl_easy_setopt(curl, CURLOPT_URL, data.url.c_str());
@@ -260,6 +267,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
 	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
+	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(github_rest_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
