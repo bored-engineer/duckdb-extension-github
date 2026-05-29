@@ -1,7 +1,9 @@
 #include "github_client_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/vector_operations/binary_executor.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
+#include "duckdb/function/function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
@@ -22,30 +24,25 @@ std::map<std::string, std::string> generated_types = {
 #include "generated_types.cpp"
 };
 
-// Output the JSON type for the given REST type
-inline void GitHubRESTTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
+static string_t LookupRESTType(const string_t &name, bool list, Vector &result) {
+	auto it = generated_types.find(name.GetString());
+	if (it == generated_types.end()) {
+		throw InvalidInputException("Unknown type: %s", name.GetString());
+	}
+	return StringVector::AddString(result, list ? "[" + it->second + "]" : it->second);
+}
 
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		auto it = generated_types.find(name.GetString());
-		if (it == generated_types.end()) {
-			throw InvalidInputException("Unknown type: %s", name.GetString());
-		}
-		return StringVector::AddString(result, it->second);
+inline void GitHubRESTTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t name) {
+		return LookupRESTType(name, false, result);
 	});
 }
 
-// Output the JSON type for the given REST type
-inline void GitHubRESTListTypeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		auto it = generated_types.find(name.GetString());
-		if (it == generated_types.end()) {
-			throw InvalidInputException("Unknown type: %s", name.GetString());
-		}
-		return StringVector::AddString(result, "[" + it->second + "]");
-	});
+inline void GitHubRESTTypeFunctionWithList(DataChunk &args, ExpressionState &state, Vector &result) {
+	BinaryExecutor::Execute<string_t, bool, string_t>(args.data[0], args.data[1], result, args.size(),
+	                                                  [&](string_t name, bool list) {
+		                                                  return LookupRESTType(name, list, result);
+	                                                  });
 }
 
 // Parses the rel="next' URL from the Link header returned by GitHub API
@@ -228,12 +225,12 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
 	loader.RegisterFunction(github_rest_function);
-	ScalarFunction github_rest_type_function("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                                         GitHubRESTTypeFunction);
-	loader.RegisterFunction(github_rest_type_function);
-	ScalarFunction github_rest_list_type_function("github_rest_list_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                                              GitHubRESTListTypeFunction);
-	loader.RegisterFunction(github_rest_list_type_function);
+	ScalarFunctionSet github_rest_type_set("github_rest_type");
+	github_rest_type_set.AddFunction(
+	    ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
+	github_rest_type_set.AddFunction(
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::BOOLEAN}, LogicalType::VARCHAR, GitHubRESTTypeFunctionWithList));
+	loader.RegisterFunction(github_rest_type_set);
 }
 
 void GithubClientExtension::Load(ExtensionLoader &loader) {
