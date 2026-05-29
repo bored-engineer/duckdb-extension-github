@@ -17,13 +17,11 @@ Tokens are resolved in this order for the default host (`api.github.com`):
 2. `GH_TOKEN` environment variable
 3. `GITHUB_TOKEN` environment variable
 
-When using a GitHub Enterprise host (via the `host` parameter or `GH_HOST` env var), enterprise-specific tokens are checked first:
+When using a GitHub Enterprise host (via the `host` parameter or `GH_HOST` env var), only enterprise-specific tokens are used — `GH_TOKEN` and `GITHUB_TOKEN` are intentionally ignored:
 
 1. A DuckDB `http` secret scoped to the enterprise host
 2. `GH_ENTERPRISE_TOKEN` environment variable
 3. `GITHUB_ENTERPRISE_TOKEN` environment variable
-4. `GH_TOKEN` environment variable
-5. `GITHUB_TOKEN` environment variable
 
 **Creating a secret:**
 ```sql

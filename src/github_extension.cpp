@@ -146,8 +146,8 @@ static const char *GitHubUserAgent() {
 }
 
 // Resolves the bearer token: DuckDB secrets take priority, then environment variables.
-// When the host is a GitHub Enterprise instance, GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN
-// are checked before GH_TOKEN / GITHUB_TOKEN.
+// For enterprise hosts only GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN are checked.
+// For the default host only GH_TOKEN / GITHUB_TOKEN are checked.
 static std::string ResolveToken(ClientContext &context, const std::string &host, bool is_enterprise) {
 	auto try_env = [](const char *name) -> const char * {
 		const char *v = std::getenv(name);
@@ -173,23 +173,27 @@ static std::string ResolveToken(ClientContext &context, const std::string &host,
 		}
 		token = token_value.ToString();
 	}
-	if (token.empty() && is_enterprise) {
-		if (const char *v = try_env("GH_ENTERPRISE_TOKEN")) {
-			token = v;
-		} else if (const char *v = try_env("GITHUB_ENTERPRISE_TOKEN")) {
-			token = v;
+	if (token.empty()) {
+		if (is_enterprise) {
+			if (const char *v = try_env("GH_ENTERPRISE_TOKEN")) {
+				token = v;
+			} else if (const char *v = try_env("GITHUB_ENTERPRISE_TOKEN")) {
+				token = v;
+			}
+		} else {
+			if (const char *v = try_env("GH_TOKEN")) {
+				token = v;
+			} else if (const char *v = try_env("GITHUB_TOKEN")) {
+				token = v;
+			}
 		}
 	}
 	if (token.empty()) {
-		if (const char *v = try_env("GH_TOKEN")) {
-			token = v;
-		} else if (const char *v = try_env("GITHUB_TOKEN")) {
-			token = v;
-		}
-	}
-	if (token.empty()) {
-		throw InvalidInputException("No GitHub token found. Create an 'http' secret with 'CREATE SECRET', or set "
-		                            "GH_TOKEN or GITHUB_TOKEN.");
+		throw InvalidInputException(
+		    is_enterprise
+		        ? "No GitHub token found. Create an 'http' secret with 'CREATE SECRET', or set GH_ENTERPRISE_TOKEN."
+		        : "No GitHub token found. Create an 'http' secret with 'CREATE SECRET', or set GH_TOKEN or "
+		          "GITHUB_TOKEN.");
 	}
 	return token;
 }
