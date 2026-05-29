@@ -346,6 +346,7 @@ static Value BuildHeadersMapValue(const GitHubResponseHeaders &resp_headers) {
 
 struct GitHubRESTBindData : public GitHubRequestBindData {
 	string host;
+	bool paginate = true;
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -361,6 +362,11 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	std::string host = BindCommonRequestData(context, input, *result);
 	result->host = host;
 	result->url = host + path;
+
+	auto paginate_param = input.named_parameters.find("paginate");
+	if (paginate_param != input.named_parameters.end()) {
+		result->paginate = paginate_param->second.GetValue<bool>();
+	}
 
 	names.emplace_back("url");
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -388,10 +394,13 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	output.SetValue(3, 0, BuildRateLimitValue(resp_headers));
 	output.SetCardinality(1);
 
-	// Check for the "Link" header to see if there's a next page
-	std::string next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
-	if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
-		throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
+	// Check for the "Link" header to see if there's a next page (unless pagination is disabled)
+	std::string next_url;
+	if (data.paginate) {
+		next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
+		if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
+			throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
+		}
 	}
 	data.url = next_url;
 }
@@ -530,6 +539,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["headers"] = LogicalType::ANY;
+	github_rest_function.named_parameters["paginate"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(github_rest_function);
 	TableFunction github_graphql_function("github_graphql", {LogicalType::VARCHAR}, GitHubGraphQLFunction,
 	                                      GitHubGraphQLBind);
