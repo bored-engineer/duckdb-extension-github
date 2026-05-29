@@ -560,6 +560,25 @@ static const char *YYJSONFindString(yyjson_val *val, const char *key) {
 	return nullptr;
 }
 
+// Builds a LIST(JSON) value from a yyjson array, one element per item.
+// Returns an empty list when arr is null or not an array.
+static Value YYJSONArrayToJSONList(yyjson_val *arr) {
+	vector<Value> values;
+	if (arr && yyjson_is_arr(arr)) {
+		yyjson_arr_iter it;
+		yyjson_arr_iter_init(arr, &it);
+		yyjson_val *item;
+		while ((item = yyjson_arr_iter_next(&it))) {
+			char *json = yyjson_val_write(item, 0, nullptr);
+			if (json) {
+				values.emplace_back(Value(json).DefaultCastAs(LogicalType::JSON()));
+				free(json);
+			}
+		}
+	}
+	return Value::LIST(LogicalType::JSON(), std::move(values));
+}
+
 struct GitHubGraphQLBindData : public GitHubRequestBindData {
 	string query;
 	string variables_json;
@@ -588,6 +607,8 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
 
 	AddCommonResultColumns(return_types, names);
 	names.emplace_back("errors");
+	return_types.emplace_back(LogicalType::LIST(LogicalType::JSON()));
+	names.emplace_back("warnings");
 	return_types.emplace_back(LogicalType::LIST(LogicalType::JSON()));
 
 	return std::move(result);
@@ -634,20 +655,12 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 		}
 	}
 
-	vector<Value> error_values;
-	if (errors && yyjson_is_arr(errors)) {
-		yyjson_arr_iter it;
-		yyjson_arr_iter_init(errors, &it);
-		yyjson_val *e;
-		while ((e = yyjson_arr_iter_next(&it))) {
-			char *e_json = yyjson_val_write(e, 0, nullptr);
-			if (e_json) {
-				error_values.emplace_back(Value(e_json).DefaultCastAs(LogicalType::JSON()));
-				free(e_json);
-			}
-		}
-	}
-	Value errors_value = Value::LIST(LogicalType::JSON(), std::move(error_values));
+	Value errors_value = YYJSONArrayToJSONList(errors);
+
+	// Warnings live under extensions.warnings, if present
+	yyjson_val *extensions = yyjson_is_obj(root) ? yyjson_obj_get(root, "extensions") : nullptr;
+	yyjson_val *warnings = (extensions && yyjson_is_obj(extensions)) ? yyjson_obj_get(extensions, "warnings") : nullptr;
+	Value warnings_value = YYJSONArrayToJSONList(warnings);
 
 	std::string next_cursor;
 	if (YYJSONFindTrue(root, "hasNextPage")) {
@@ -661,6 +674,7 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
 	output.SetValue(2, 0, BuildRateLimitValue(resp_headers));
 	output.SetValue(3, 0, errors_value);
+	output.SetValue(4, 0, warnings_value);
 	output.SetCardinality(1);
 
 	// Continue paginating while the response reports another page and yields a new cursor.
