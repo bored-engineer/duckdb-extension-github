@@ -115,6 +115,29 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_repo_issue_labels");
 
+	run("CREATE OR REPLACE MACRO github_repo_branches(owner, repo, protected := NULL, per_page := NULL) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('short-branch')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/branches',"
+	    " query := {'per_page': '100', 'protected': protected})"
+	    ") _",
+	    "github_repo_branches");
+
+	run("CREATE OR REPLACE MACRO github_repo_branch(owner, repo, branch) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('branch-with-protection')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/branches/' || branch)"
+	    ") _",
+	    "github_repo_branch");
+
+	run("CREATE OR REPLACE MACRO github_repo_branch_protection(owner, repo, branch) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('branch-protection')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/branches/' || branch || '/protection',"
+	    " paginate := false)"
+	    ") _",
+	    "github_repo_branch_protection");
+
 	run("CREATE OR REPLACE MACRO github_repo_labels(owner, repo) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('label')) AS r "
