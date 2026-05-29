@@ -15,9 +15,14 @@
 
 #include <curl/curl.h>
 
+#include "yyjson.hpp"
+
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <sstream>
+
+using namespace duckdb_yyjson; // NOLINT
 
 namespace duckdb {
 
@@ -405,212 +410,154 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	data.url = next_url;
 }
 
-static std::string JSONEncodeString(const std::string &s) {
-	std::string out;
-	out.reserve(s.size() + 2);
-	out += '"';
-	for (unsigned char c : s) {
-		switch (c) {
-		case '"':  out += "\\\""; break;
-		case '\\': out += "\\\\"; break;
-		case '\b': out += "\\b";  break;
-		case '\f': out += "\\f";  break;
-		case '\n': out += "\\n";  break;
-		case '\r': out += "\\r";  break;
-		case '\t': out += "\\t";  break;
-		default:
-			if (c < 0x20) {
-				char buf[7];
-				snprintf(buf, sizeof(buf), "\\u%04x", c);
-				out += buf;
-			} else {
-				out += static_cast<char>(c);
-			}
-		}
-	}
-	out += '"';
-	return out;
-}
-
-static std::string ValueToJSON(const Value &v) {
+// Converts a DuckDB Value into a yyjson mutable value owned by doc (used for GraphQL variables).
+static yyjson_mut_val *ValueToYYJSON(yyjson_mut_doc *doc, const Value &v) {
 	if (v.IsNull()) {
-		return "null";
+		return yyjson_mut_null(doc);
 	}
 	switch (v.type().id()) {
 	case LogicalTypeId::BOOLEAN:
-		return v.GetValue<bool>() ? "true" : "false";
+		return yyjson_mut_bool(doc, v.GetValue<bool>());
 	case LogicalTypeId::TINYINT:
 	case LogicalTypeId::SMALLINT:
 	case LogicalTypeId::INTEGER:
 	case LogicalTypeId::BIGINT:
 	case LogicalTypeId::HUGEINT:
+		return yyjson_mut_sint(doc, v.GetValue<int64_t>());
 	case LogicalTypeId::UTINYINT:
 	case LogicalTypeId::USMALLINT:
 	case LogicalTypeId::UINTEGER:
 	case LogicalTypeId::UBIGINT:
+		return yyjson_mut_uint(doc, v.GetValue<uint64_t>());
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
-		return v.ToString();
-	case LogicalTypeId::VARCHAR:
-		return JSONEncodeString(v.GetValue<string>());
+		return yyjson_mut_real(doc, v.GetValue<double>());
+	case LogicalTypeId::VARCHAR: {
+		auto s = v.GetValue<string>();
+		return yyjson_mut_strncpy(doc, s.c_str(), s.size());
+	}
 	case LogicalTypeId::LIST: {
-		auto &children = ListValue::GetChildren(v);
-		std::string out = "[";
-		for (idx_t i = 0; i < children.size(); i++) {
-			if (i > 0) {
-				out += ",";
-			}
-			out += ValueToJSON(children[i]);
+		auto arr = yyjson_mut_arr(doc);
+		for (auto &child : ListValue::GetChildren(v)) {
+			yyjson_mut_arr_append(arr, ValueToYYJSON(doc, child));
 		}
-		return out + "]";
+		return arr;
 	}
 	case LogicalTypeId::STRUCT: {
+		auto obj = yyjson_mut_obj(doc);
 		auto &children = StructValue::GetChildren(v);
-		std::string out = "{";
 		for (idx_t i = 0; i < children.size(); i++) {
-			if (i > 0) {
-				out += ",";
-			}
-			out += JSONEncodeString(StructType::GetChildName(v.type(), i));
-			out += ":";
-			out += ValueToJSON(children[i]);
+			auto key = StructType::GetChildName(v.type(), i);
+			auto key_val = yyjson_mut_strncpy(doc, key.c_str(), key.size());
+			yyjson_mut_obj_add(obj, key_val, ValueToYYJSON(doc, children[i]));
 		}
-		return out + "}";
+		return obj;
 	}
 	default:
 		throw InvalidInputException("Unsupported type for GraphQL variables: %s", v.type().ToString());
 	}
 }
 
+// Serializes a DuckDB Value to a JSON string.
+static std::string ValueToJSON(const Value &v) {
+	yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
+	yyjson_mut_doc_set_root(doc, ValueToYYJSON(doc, v));
+	char *json = yyjson_mut_write(doc, 0, nullptr);
+	std::string result = json ? json : "";
+	free(json);
+	yyjson_mut_doc_free(doc);
+	return result;
+}
+
 // Builds the GraphQL POST body, merging an optional pagination cursor into the variables
 // object under the "endCursor" key (so the query can reference it as $endCursor).
 static std::string BuildGraphQLBody(const std::string &query, const std::string &variables_json,
                                     const std::string &cursor = "") {
-	std::string vars = variables_json;
-	if (!cursor.empty()) {
-		std::string cursor_entry = "\"endCursor\":" + JSONEncodeString(cursor);
-		if (vars.empty() || vars == "{}") {
-			vars = "{" + cursor_entry + "}";
-		} else {
-			vars = vars.substr(0, vars.size() - 1) + "," + cursor_entry + "}";
+	yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
+	yyjson_mut_val *root = yyjson_mut_obj(doc);
+	yyjson_mut_doc_set_root(doc, root);
+	yyjson_mut_obj_add_strncpy(doc, root, "query", query.c_str(), query.size());
+
+	// Copy the caller-supplied variables (a JSON object) into the body, if any
+	yyjson_mut_val *vars = nullptr;
+	if (!variables_json.empty()) {
+		yyjson_doc *vdoc = yyjson_read(variables_json.c_str(), variables_json.size(), 0);
+		if (vdoc) {
+			vars = yyjson_val_mut_copy(doc, yyjson_doc_get_root(vdoc));
+			yyjson_doc_free(vdoc);
 		}
 	}
-	std::string body = "{\"query\":" + JSONEncodeString(query);
-	if (!vars.empty()) {
-		body += ",\"variables\":" + vars;
+	if (!cursor.empty()) {
+		if (!vars || !yyjson_mut_is_obj(vars)) {
+			vars = yyjson_mut_obj(doc);
+		}
+		yyjson_mut_obj_add_strncpy(doc, vars, "endCursor", cursor.c_str(), cursor.size());
 	}
-	return body + "}";
+	if (vars) {
+		yyjson_mut_obj_add_val(doc, root, "variables", vars);
+	}
+
+	char *json = yyjson_mut_write(doc, 0, nullptr);
+	std::string body = json ? json : "";
+	free(json);
+	yyjson_mut_doc_free(doc);
+	return body;
 }
 
-static void SkipJSONWhitespace(const std::string &s, size_t &i) {
-	while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) {
-		i++;
-	}
-}
-
-// Returns true if the response body contains a "hasNextPage": true entry.
-static bool GraphQLHasNextPage(const std::string &body) {
-	const std::string key = "\"hasNextPage\"";
-	size_t pos = 0;
-	while ((pos = body.find(key, pos)) != std::string::npos) {
-		size_t i = pos + key.size();
-		SkipJSONWhitespace(body, i);
-		if (i < body.size() && body[i] == ':') {
-			i++;
-			SkipJSONWhitespace(body, i);
-			if (body.compare(i, 4, "true") == 0) {
+// Recursively searches a JSON value for any key with a boolean-true value.
+static bool YYJSONFindTrue(yyjson_val *val, const char *key) {
+	if (yyjson_is_obj(val)) {
+		yyjson_obj_iter it;
+		yyjson_obj_iter_init(val, &it);
+		yyjson_val *k;
+		while ((k = yyjson_obj_iter_next(&it))) {
+			yyjson_val *v = yyjson_obj_iter_get_val(k);
+			if (strcmp(yyjson_get_str(k), key) == 0 && yyjson_is_true(v)) {
+				return true;
+			}
+			if (YYJSONFindTrue(v, key)) {
 				return true;
 			}
 		}
-		pos += key.size();
+	} else if (yyjson_is_arr(val)) {
+		yyjson_arr_iter it;
+		yyjson_arr_iter_init(val, &it);
+		yyjson_val *v;
+		while ((v = yyjson_arr_iter_next(&it))) {
+			if (YYJSONFindTrue(v, key)) {
+				return true;
+			}
+		}
 	}
 	return false;
 }
 
-// Extracts the first string-valued "endCursor" from the response body, decoding JSON escapes.
-static std::string GraphQLEndCursor(const std::string &body) {
-	const std::string key = "\"endCursor\"";
-	size_t pos = 0;
-	while ((pos = body.find(key, pos)) != std::string::npos) {
-		size_t i = pos + key.size();
-		SkipJSONWhitespace(body, i);
-		if (i < body.size() && body[i] == ':') {
-			i++;
-			SkipJSONWhitespace(body, i);
-			if (i < body.size() && body[i] == '"') {
-				i++;
-				std::string value;
-				while (i < body.size() && body[i] != '"') {
-					if (body[i] == '\\' && i + 1 < body.size()) {
-						switch (body[i + 1]) {
-						case '"':  value += '"';  break;
-						case '\\': value += '\\'; break;
-						case '/':  value += '/';  break;
-						case 'b':  value += '\b'; break;
-						case 'f':  value += '\f'; break;
-						case 'n':  value += '\n'; break;
-						case 'r':  value += '\r'; break;
-						case 't':  value += '\t'; break;
-						default:   value += body[i + 1]; break;
-						}
-						i += 2;
-					} else {
-						value += body[i++];
-					}
-				}
-				return value;
+// Recursively searches a JSON value for the first string value under the given key.
+static const char *YYJSONFindString(yyjson_val *val, const char *key) {
+	if (yyjson_is_obj(val)) {
+		yyjson_obj_iter it;
+		yyjson_obj_iter_init(val, &it);
+		yyjson_val *k;
+		while ((k = yyjson_obj_iter_next(&it))) {
+			yyjson_val *v = yyjson_obj_iter_get_val(k);
+			if (strcmp(yyjson_get_str(k), key) == 0 && yyjson_is_str(v)) {
+				return yyjson_get_str(v);
 			}
-			// "endCursor": null — keep looking for a string-valued one
-		}
-		pos += key.size();
-	}
-	return "";
-}
-
-// Returns the "errors" array of a GraphQL response if present and non-empty, otherwise "".
-static std::string GraphQLErrors(const std::string &body) {
-	const std::string key = "\"errors\"";
-	size_t pos = 0;
-	while ((pos = body.find(key, pos)) != std::string::npos) {
-		size_t i = pos + key.size();
-		SkipJSONWhitespace(body, i);
-		if (i < body.size() && body[i] == ':') {
-			i++;
-			SkipJSONWhitespace(body, i);
-			if (i < body.size() && body[i] == '[') {
-				// Empty array → no errors
-				size_t j = i + 1;
-				SkipJSONWhitespace(body, j);
-				if (j < body.size() && body[j] == ']') {
-					return "";
-				}
-				// Return the full array text, tracking string/bracket nesting
-				bool in_string = false;
-				int depth = 0;
-				for (size_t k = i; k < body.size(); k++) {
-					char c = body[k];
-					if (in_string) {
-						if (c == '\\') {
-							k++;
-						} else if (c == '"') {
-							in_string = false;
-						}
-					} else if (c == '"') {
-						in_string = true;
-					} else if (c == '[') {
-						depth++;
-					} else if (c == ']') {
-						if (--depth == 0) {
-							return body.substr(i, k - i + 1);
-						}
-					}
-				}
-				return body.substr(i);
+			if (const char *found = YYJSONFindString(v, key)) {
+				return found;
 			}
 		}
-		pos += key.size();
+	} else if (yyjson_is_arr(val)) {
+		yyjson_arr_iter it;
+		yyjson_arr_iter_init(val, &it);
+		yyjson_val *v;
+		while ((v = yyjson_arr_iter_next(&it))) {
+			if (const char *found = YYJSONFindString(v, key)) {
+				return found;
+			}
+		}
 	}
-	return "";
+	return nullptr;
 }
 
 struct GitHubGraphQLBindData : public GitHubRequestBindData {
@@ -650,11 +597,31 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	GitHubResponseHeaders resp_headers;
 	ExecuteGitHubRequest(data, &post_body, body, resp_headers);
 
-	// Surface any GraphQL errors returned in the response
-	std::string errors = GraphQLErrors(body);
-	if (!errors.empty()) {
-		throw InvalidInputException("GraphQL query returned errors: %s", errors);
+	// Parse the response once and inspect it for errors and pagination info
+	yyjson_doc *doc = yyjson_read(body.c_str(), body.size(), 0);
+	if (!doc) {
+		throw InvalidInputException("Failed to parse GraphQL response as JSON");
 	}
+	yyjson_val *root = yyjson_doc_get_root(doc);
+
+	// Surface any GraphQL errors returned in the response
+	yyjson_val *errors = yyjson_is_obj(root) ? yyjson_obj_get(root, "errors") : nullptr;
+	if (errors && yyjson_is_arr(errors) && yyjson_arr_size(errors) > 0) {
+		char *errors_json = yyjson_val_write(errors, 0, nullptr);
+		std::string message = errors_json ? errors_json : "";
+		free(errors_json);
+		yyjson_doc_free(doc);
+		throw InvalidInputException("GraphQL query returned errors: %s", message);
+	}
+
+	// Determine the next pagination cursor while the document is still parsed
+	std::string next_cursor;
+	if (YYJSONFindTrue(root, "hasNextPage")) {
+		if (const char *cursor = YYJSONFindString(root, "endCursor")) {
+			next_cursor = cursor;
+		}
+	}
+	yyjson_doc_free(doc);
 
 	output.SetValue(0, 0, Value(body));
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
@@ -662,10 +629,6 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	output.SetCardinality(1);
 
 	// Continue paginating while the response reports another page and yields a new cursor.
-	std::string next_cursor;
-	if (GraphQLHasNextPage(body)) {
-		next_cursor = GraphQLEndCursor(body);
-	}
 	if (next_cursor.empty() || next_cursor == data.cursor) {
 		data.done = true;
 	} else {

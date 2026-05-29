@@ -20,6 +20,7 @@ set(EXTENSION_SOURCES src/github_client_extension.cpp)
 # Common libraries needed for both targets
 set(COMMON_LIBS
     duckdb_mbedtls
+    duckdb_yyjson
     CURL::libcurl
 )
 
