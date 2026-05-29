@@ -359,7 +359,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, github_rest_type('code-search-result-item')) AS r "
 	    "FROM github_rest('/search/code',"
 	    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_code");
 
@@ -368,7 +368,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, github_rest_type('commit-search-result-item')) AS r "
 	    "FROM github_rest('/search/commits',"
 	    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_commits");
 
@@ -377,7 +377,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, github_rest_type('issue-search-result-item')) AS r "
 	    "FROM github_rest('/search/issues',"
 	    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_issues");
 
@@ -387,7 +387,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "FROM github_rest('/search/labels',"
 	    " query := {'per_page': '100', 'q': q, 'repository_id': repository_id::VARCHAR,"
 	    " 'sort': sort, 'direction': direction},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_labels");
 
@@ -396,7 +396,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, github_rest_type('repo-search-result-item')) AS r "
 	    "FROM github_rest('/search/repositories',"
 	    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_repos");
 
@@ -405,7 +405,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, github_rest_type('topic-search-result-item')) AS r "
 	    "FROM github_rest('/search/topics',"
 	    " query := {'per_page': '100', 'q': q},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_topics");
 
@@ -414,7 +414,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, github_rest_type('user-search-result-item')) AS r "
 	    "FROM github_rest('/search/users',"
 	    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
-	    " extract_key := 'items')"
+	    " array_key := 'items')"
 	    ") _",
 	    "github_search_users");
 
@@ -604,7 +604,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('installation')) AS r "
 	    "FROM github_rest('/orgs/' || org || '/installations',"
-	    " query := {'per_page': '100'}, extract_key := 'installations')"
+	    " query := {'per_page': '100'}, array_key := 'installations')"
 	    ") _",
 	    "github_org_installations");
 
@@ -735,7 +735,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "SELECT json_transform(data, '{\"column\":\"INT64\",\"kind\":\"STRING\",\"line\":\"INT64\","
 	    "\"message\":\"STRING\",\"path\":\"STRING\",\"source\":\"STRING\",\"suggestion\":\"STRING\"}') AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/codeowners/errors',"
-	    " query := {'ref': ref}, paginate := false, extract_key := 'errors')"
+	    " query := {'ref': ref}, paginate := false, array_key := 'errors')"
 	    ") _",
 	    "github_repo_codeowners_errors");
 

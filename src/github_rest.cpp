@@ -64,7 +64,7 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 		result->paginate = paginate_param->second.GetValue<bool>();
 	}
 
-	auto extract_param = input.named_parameters.find("extract_key");
+	auto extract_param = input.named_parameters.find("array_key");
 	if (extract_param != input.named_parameters.end()) {
 		result->extract = extract_param->second.GetValue<string>();
 	}
@@ -146,7 +146,7 @@ void RegisterGitHubRESTFunction(ExtensionLoader &loader) {
 	github_rest_function.named_parameters["headers"] = LogicalType::ANY;
 	github_rest_function.named_parameters["query"] = LogicalType::ANY;
 	github_rest_function.named_parameters["paginate"] = LogicalType::BOOLEAN;
-	github_rest_function.named_parameters["extract_key"] = LogicalType::VARCHAR;
+	github_rest_function.named_parameters["array_key"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(github_rest_function);
 }
 
