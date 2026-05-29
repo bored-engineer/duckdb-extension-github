@@ -142,18 +142,13 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 			has_query = true;
 		};
 
-		if (type_id == LogicalTypeId::MAP) {
-			for (auto &entry : MapValue::GetChildren(qval)) {
-				auto &kv = StructValue::GetChildren(entry);
-				append_pair(kv[0].GetValue<string>(), kv[1].GetValue<string>());
-			}
-		} else if (type_id == LogicalTypeId::STRUCT) {
+		if (type_id == LogicalTypeId::STRUCT) {
 			auto &children = StructValue::GetChildren(qval);
 			for (idx_t i = 0; i < children.size(); i++) {
 				append_pair(StructType::GetChildName(qval.type(), i), children[i].GetValue<string>());
 			}
 		} else {
-			throw InvalidInputException("'query' must be a STRUCT or MAP, got %s", qval.type().ToString());
+			throw InvalidInputException("'query' must be a STRUCT, got %s", qval.type().ToString());
 		}
 	}
 
