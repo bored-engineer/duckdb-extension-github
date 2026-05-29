@@ -180,7 +180,8 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	headers = curl_slist_append(headers, auth_header.c_str());
 	headers = curl_slist_append(headers, user_agent_header.c_str());
 	headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
-	headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
+	headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2026-03-10");
+	headers = curl_slist_append(headers, "X-Github-Next-Global-ID: 1");
 
 	curl_easy_setopt(curl, CURLOPT_URL, data.url.c_str());
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
