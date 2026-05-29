@@ -31,6 +31,17 @@ The following environment variables control connection behaviour, primarily for 
 | `GH_HOST_SSL_VERIFYPEER` | `true` | Set to `false` to disable `CURLOPT_SSL_VERIFYPEER` |
 | `GH_HOST_SSL_VERIFYHOST` | `true` | Set to `false` to disable `CURLOPT_SSL_VERIFYHOST` |
 
+## Caching
+This extension does not implement [conditional requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate), so every query makes fresh API calls and counts against your rate limit. If you are fetching a large amount of data or querying the same data multiple times, use [github-api-proxy](https://github.com/bored-engineer/github-api-proxy) to cache responses locally:
+```sh
+go install github.com/bored-engineer/github-api-proxy@latest
+github-api-proxy --pebble-db github-api-proxy.db --auth-token "$(gh auth token)"
+```
+Then launch DuckDB pointed at the proxy:
+```sh
+GH_HOST=127.0.0.1:44879 GH_HOST_SSL=false GH_ENTERPRISE_TOKEN=github-api-proxy ./duckdb
+```
+
 ## Functions
 
 ### `github_rest(path, ...)`
