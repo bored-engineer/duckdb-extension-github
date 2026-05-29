@@ -1001,8 +1001,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	Connection conn(loader.GetDatabaseInstance());
 	auto result = conn.Query(
 	    "CREATE OR REPLACE MACRO github_repo(owner, repo) AS TABLE "
-	    "SELECT json_transform(data, github_rest_type('repository')) "
-	    "FROM github_rest('/repos/' || owner || '/' || repo)");
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo)"
+	    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_repo macro: %s", result->GetError());
 	}
