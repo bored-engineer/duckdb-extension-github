@@ -1063,6 +1063,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 		throw InvalidInputException("Failed to register github_org macro: %s", result->GetError());
 	}
 	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_user_orgs(username) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('organization-simple')) AS r "
+	    "FROM github_rest('/users/' || username || '/orgs?per_page=100')"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_orgs macro: %s", result->GetError());
+	}
+	result = conn.Query(
 	    "CREATE OR REPLACE MACRO github_user_social_accounts(username) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('social-account')) AS r "
