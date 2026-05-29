@@ -1,4 +1,4 @@
-#include "github_client_extension.hpp"
+#include "github_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
@@ -137,8 +137,8 @@ struct GitHubRequestBindData : public TableFunctionData {
 };
 
 static const char *GitHubUserAgent() {
-#ifdef EXT_VERSION_GITHUBCLIENT
-	return "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT
+#ifdef EXT_VERSION_GITHUB
+	return "duckdb-extension-github/" EXT_VERSION_GITHUB
 	       " (+https://github.com/bored-engineer/duckdb-extension-github)";
 #else
 	return "duckdb-extension-github/unknown (+https://github.com/bored-engineer/duckdb-extension-github)";
@@ -726,17 +726,17 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(github_rest_type_set);
 }
 
-void GithubClientExtension::Load(ExtensionLoader &loader) {
+void GithubExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
 
-std::string GithubClientExtension::Name() {
-	return "github_client";
+std::string GithubExtension::Name() {
+	return "github";
 }
 
-std::string GithubClientExtension::Version() const {
-#ifdef EXT_VERSION_GITHUBCLIENT
-	return EXT_VERSION_GITHUBCLIENT;
+std::string GithubExtension::Version() const {
+#ifdef EXT_VERSION_GITHUB
+	return EXT_VERSION_GITHUB;
 #else
 	return "";
 #endif
@@ -745,7 +745,7 @@ std::string GithubClientExtension::Version() const {
 } // namespace duckdb
 
 extern "C" {
-DUCKDB_CPP_EXTENSION_ENTRY(github_client, loader) {
+DUCKDB_CPP_EXTENSION_ENTRY(github, loader) {
 	duckdb::LoadInternal(loader);
 }
 }

@@ -2,7 +2,7 @@
 # description: Test the github_rest_type scalar function
 # group: [sql]
 
-require github_client
+require github
 
 # Single-argument form returns the JSON type schema
 query I

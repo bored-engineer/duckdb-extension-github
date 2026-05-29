@@ -5,8 +5,8 @@ A DuckDB extension for querying the GitHub REST and GraphQL APIs directly from S
 ## Installation
 
 ```sql
-INSTALL github_client FROM community;
-LOAD github_client;
+INSTALL github FROM community;
+LOAD github;
 ```
 
 ## Authentication

@@ -5,7 +5,7 @@
 
 namespace duckdb {
 
-class GithubClientExtension : public Extension {
+class GithubExtension : public Extension {
 public:
 	void Load(ExtensionLoader &loader) override;
 	std::string Name() override;

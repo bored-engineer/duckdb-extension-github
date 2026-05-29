@@ -4,7 +4,7 @@
 
 require-env GITHUB_TOKEN
 
-require github_client
+require github
 
 require json
 

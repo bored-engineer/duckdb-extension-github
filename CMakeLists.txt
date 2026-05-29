@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
 # Set extension name here
-set(TARGET_NAME github_client)
+set(TARGET_NAME github)
 
 find_package(CURL REQUIRED)
 
@@ -15,7 +15,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
 
-set(EXTENSION_SOURCES src/github_client_extension.cpp)
+set(EXTENSION_SOURCES src/github_extension.cpp)
 
 # Common libraries needed for both targets
 set(COMMON_LIBS
