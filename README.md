@@ -176,9 +176,9 @@ FROM github_graphql(
 
 ---
 
-### `github_contents_raw(owner, repo, path[, ref])`
+### `github_contents_raw(owner, repo, path[, ref[, host]])`
 
-Fetches the raw contents of a file from a GitHub repository. Makes a GET request to `/repos/{owner}/{repo}/contents/{path}` with `Accept: application/vnd.github.raw+json` and returns the response body as a `VARCHAR`.
+Fetches the raw contents of a file from a GitHub repository. Makes a GET request to `/repos/{owner}/{repo}/contents/{path}` with `Accept: application/vnd.github.raw+json` and returns the response body as a `BLOB`.
 
 **Parameters:**
 
@@ -187,7 +187,8 @@ Fetches the raw contents of a file from a GitHub repository. Makes a GET request
 | `owner` | `VARCHAR` | required | Repository owner (user or organisation) |
 | `repo` | `VARCHAR` | required | Repository name |
 | `path` | `VARCHAR` | required | Path to the file within the repository |
-| `ref` | `VARCHAR` | — | Branch, tag, or commit SHA to read from (defaults to the repository's default branch) |
+| `ref` | `VARCHAR` | `''` | Branch, tag, or commit SHA to read from; empty string uses the repository's default branch |
+| `host` | `VARCHAR` | `''` | API hostname (GitHub Enterprise); empty string falls back to `GH_HOST` env var or `api.github.com` |
 
 **Returns:** `BLOB` — raw file contents. Cast to `VARCHAR` if you need text operations (e.g. `::VARCHAR`).
 
@@ -200,8 +201,11 @@ SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.
 -- Read a file from a specific branch or tag
 SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md', 'main');
 
+-- GitHub Enterprise (empty string ref = default branch)
+SELECT github_contents_raw('owner', 'repo', 'path', '', 'github.mycompany.com');
+
 -- Cast to VARCHAR for text operations
-SELECT length(github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md')::VARCHAR);
+SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md')::VARCHAR;
 ```
 
 ---

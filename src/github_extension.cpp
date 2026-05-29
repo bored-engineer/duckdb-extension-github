@@ -728,21 +728,24 @@ static unique_ptr<FunctionData> GitHubContentsRawBind(ClientContext &context, Sc
                                                       vector<unique_ptr<Expression>> &arguments) {
 	auto result = make_uniq<GitHubContentsRawData>();
 
-	// Resolve host: GH_HOST env var > api.github.com
-	const char *gh_host_env = std::getenv("GH_HOST");
-	std::string hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
+	// Extract optional ref (4th arg): empty string or absent means use the repo's default branch.
+	if (arguments.size() > 3 && arguments[3]->IsFoldable()) {
+		result->ref = ExpressionExecutor::EvaluateScalar(context, *arguments[3]).GetValue<string>();
+	}
+
+	// Extract optional host (5th arg): empty string or absent falls back to GH_HOST env var or api.github.com.
+	std::string hostname;
+	if (arguments.size() > 4 && arguments[4]->IsFoldable()) {
+		hostname = ExpressionExecutor::EvaluateScalar(context, *arguments[4]).GetValue<string>();
+	}
+	if (hostname.empty()) {
+		const char *gh_host_env = std::getenv("GH_HOST");
+		hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
+	}
 	bool is_enterprise = hostname != "api.github.com";
 	result->host = "https://" + hostname;
 	result->user_agent = GitHubUserAgent();
 	result->token = ResolveToken(context, result->host, is_enterprise);
-
-	// Extract the optional 'ref' named parameter (4th argument) if it is a constant
-	if (arguments.size() > 3 && arguments[3]->IsFoldable()) {
-		Value ref_val = ExpressionExecutor::EvaluateScalar(context, *arguments[3]);
-		if (!ref_val.IsNull()) {
-			result->ref = ref_val.GetValue<string>();
-		}
-	}
 
 	return std::move(result);
 }
@@ -792,10 +795,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(github_graphql_function);
 	ScalarFunctionSet github_contents_raw_set("github_contents_raw");
 	github_contents_raw_set.AddFunction(ScalarFunction(
-	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BLOB,
-	    GitHubContentsRawFunction, GitHubContentsRawBind));
+	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
 	github_contents_raw_set.AddFunction(ScalarFunction(
 	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
+	github_contents_raw_set.AddFunction(ScalarFunction(
+	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	    LogicalType::BLOB, GitHubContentsRawFunction, GitHubContentsRawBind));
 	loader.RegisterFunction(github_contents_raw_set);
 	loader.RegisterFunction(

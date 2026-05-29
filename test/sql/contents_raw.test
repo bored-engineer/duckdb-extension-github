@@ -13,7 +13,7 @@ CREATE SECRET github (
     SCOPE 'https://api.github.com'
 );
 
-# Fetch LICENSE from the default branch (3-arg overload) and verify it contains expected text.
+# 3-arg: fetch from default branch, verify known content.
 query I
 SELECT contains(
     github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE')::VARCHAR,
@@ -22,10 +22,26 @@ SELECT contains(
 ----
 true
 
-# Fetch the same file pinned to the main ref (4-arg overload) and verify identical behaviour.
+# 4-arg with explicit ref.
 query I
 SELECT contains(
-    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE', 'main'),
+    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE', 'main')::VARCHAR,
+    'Permission is hereby granted'
+);
+----
+true
+
+# 4-arg with empty string ref is equivalent to the 3-arg form.
+query I
+SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE', '')
+    = github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE');
+----
+true
+
+# 5-arg with explicit host and empty ref.
+query I
+SELECT contains(
+    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE', '', 'api.github.com')::VARCHAR,
     'Permission is hereby granted'
 );
 ----
