@@ -12,6 +12,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/common/types/blob.hpp"
+#include "duckdb/main/connection.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
 #include <curl/curl.h>
@@ -996,6 +997,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(github_contents_raw_set);
 	loader.RegisterFunction(
 	    ScalarFunction("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
+
+	Connection conn(loader.GetDatabaseInstance());
+	auto result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_repo(owner, repo) AS TABLE "
+	    "SELECT json_transform(data, github_rest_type('repository')) "
+	    "FROM github_rest('/repos/' || owner || '/' || repo)");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo macro: %s", result->GetError());
+	}
 }
 
 void GithubExtension::Load(ExtensionLoader &loader) {
