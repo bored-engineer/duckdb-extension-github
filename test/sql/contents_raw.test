@@ -1,0 +1,32 @@
+# name: test/sql/contents_raw.test
+# description: Test github_contents_raw fetching raw file content from a repository
+# group: [sql]
+
+require-env GITHUB_TOKEN
+
+require github
+
+statement ok
+CREATE SECRET github (
+    TYPE http,
+    BEARER_TOKEN '${GITHUB_TOKEN}',
+    SCOPE 'https://api.github.com'
+);
+
+# Fetch LICENSE from the default branch (3-arg overload) and verify it contains expected text.
+query I
+SELECT contains(
+    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE'),
+    'Permission is hereby granted'
+);
+----
+true
+
+# Fetch the same file pinned to the main ref (4-arg overload) and verify identical behaviour.
+query I
+SELECT contains(
+    github_contents_raw('bored-engineer', 'duckdb-extension-github', 'LICENSE', 'main'),
+    'Permission is hereby granted'
+);
+----
+true
