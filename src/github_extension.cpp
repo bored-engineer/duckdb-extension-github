@@ -594,6 +594,7 @@ struct GitHubGraphQLBindData : public GitHubRequestBindData {
 	string variables_json;
 	string cursor;
 	bool ignore_errors = false;
+	bool paginate = true;
 	bool done = false;
 };
 
@@ -610,6 +611,11 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
 	auto ignore_errors_param = input.named_parameters.find("ignore_errors");
 	if (ignore_errors_param != input.named_parameters.end()) {
 		result->ignore_errors = ignore_errors_param->second.GetValue<bool>();
+	}
+
+	auto paginate_param = input.named_parameters.find("paginate");
+	if (paginate_param != input.named_parameters.end()) {
+		result->paginate = paginate_param->second.GetValue<bool>();
 	}
 
 	std::string host = BindCommonRequestData(context, input, *result);
@@ -694,7 +700,7 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	output.SetCardinality(1);
 
 	// Continue paginating while the response reports another page and yields a new cursor.
-	if (next_cursor.empty() || next_cursor == data.cursor) {
+	if (!data.paginate || next_cursor.empty() || next_cursor == data.cursor) {
 		data.done = true;
 	} else {
 		data.cursor = next_cursor;
@@ -715,6 +721,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_graphql_function.named_parameters["variables"] = LogicalType::ANY;
 	github_graphql_function.named_parameters["headers"] = LogicalType::ANY;
 	github_graphql_function.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
+	github_graphql_function.named_parameters["paginate"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(github_graphql_function);
 	loader.RegisterFunction(
 	    ScalarFunction("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
