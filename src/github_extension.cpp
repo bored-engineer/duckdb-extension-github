@@ -16,6 +16,8 @@
 #include <curl/curl.h>
 
 #include "yyjson.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -707,6 +709,71 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	}
 }
 
+struct GitHubContentsRawData : public FunctionData {
+	std::string token;
+	std::string host;
+	std::string user_agent;
+	std::string ref; // empty when not provided
+
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<GitHubContentsRawData>(*this);
+	}
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = other_p.Cast<GitHubContentsRawData>();
+		return token == other.token && host == other.host && ref == other.ref;
+	}
+};
+
+static unique_ptr<FunctionData> GitHubContentsRawBind(ClientContext &context, ScalarFunction & /*bound_function*/,
+                                                      vector<unique_ptr<Expression>> &arguments) {
+	auto result = make_uniq<GitHubContentsRawData>();
+
+	// Resolve host: GH_HOST env var > api.github.com
+	const char *gh_host_env = std::getenv("GH_HOST");
+	std::string hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
+	bool is_enterprise = hostname != "api.github.com";
+	result->host = "https://" + hostname;
+	result->user_agent = GitHubUserAgent();
+	result->token = ResolveToken(context, result->host, is_enterprise);
+
+	// Extract the optional 'ref' named parameter (4th argument) if it is a constant
+	if (arguments.size() > 3 && arguments[3]->IsFoldable()) {
+		Value ref_val = ExpressionExecutor::EvaluateScalar(context, *arguments[3]);
+		if (!ref_val.IsNull()) {
+			result->ref = ref_val.GetValue<string>();
+		}
+	}
+
+	return std::move(result);
+}
+
+static void GitHubContentsRawFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<GitHubContentsRawData>();
+
+	TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+	    args.data[0], args.data[1], args.data[2], result, args.size(),
+	    [&](string_t owner, string_t repo, string_t path) -> string_t {
+		    std::string url = data.host + "/repos/" + owner.GetString() + "/" + repo.GetString() + "/contents/" +
+		                      path.GetString();
+		    if (!data.ref.empty()) {
+			    url += "?ref=" + data.ref;
+		    }
+
+		    GitHubRequestBindData req;
+		    req.url = url;
+		    req.token = data.token;
+		    req.user_agent = data.user_agent;
+		    req.accept = "application/vnd.github.raw+json";
+		    req.api_version = "2026-03-10";
+
+		    std::string body;
+		    GitHubResponseHeaders resp_headers;
+		    ExecuteGitHubRequest(req, nullptr, body, resp_headers);
+
+		    return StringVector::AddString(result, body);
+	    });
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
 	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
@@ -723,6 +790,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_graphql_function.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
 	github_graphql_function.named_parameters["paginate"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(github_graphql_function);
+	ScalarFunctionSet github_contents_raw_set("github_contents_raw");
+	github_contents_raw_set.AddFunction(ScalarFunction(
+	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	    GitHubContentsRawFunction, GitHubContentsRawBind));
+	github_contents_raw_set.AddFunction(ScalarFunction(
+	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	    LogicalType::VARCHAR, GitHubContentsRawFunction, GitHubContentsRawBind));
+	loader.RegisterFunction(github_contents_raw_set);
 	loader.RegisterFunction(
 	    ScalarFunction("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
 }

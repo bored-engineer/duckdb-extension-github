@@ -176,6 +176,33 @@ FROM github_graphql(
 
 ---
 
+### `github_contents_raw(owner, repo, path[, ref])`
+
+Fetches the raw contents of a file from a GitHub repository. Makes a GET request to `/repos/{owner}/{repo}/contents/{path}` with `Accept: application/vnd.github.raw+json` and returns the response body as a `VARCHAR`.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `owner` | `VARCHAR` | required | Repository owner (user or organisation) |
+| `repo` | `VARCHAR` | required | Repository name |
+| `path` | `VARCHAR` | required | Path to the file within the repository |
+| `ref` | `VARCHAR` | — | Branch, tag, or commit SHA to read from (defaults to the repository's default branch) |
+
+**Returns:** `VARCHAR` — raw file contents.
+
+**Examples:**
+
+```sql
+-- Read a file from the default branch
+SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md');
+
+-- Read a file from a specific branch or tag
+SELECT github_contents_raw('bored-engineer', 'duckdb-extension-github', 'README.md', 'main');
+```
+
+---
+
 ### `github_rest_type(name)`
 Returns the JSON type schema string for a named GitHub API type, for use with DuckDB's `json_transform()` function.
 
