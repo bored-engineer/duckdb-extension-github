@@ -15,6 +15,7 @@
 
 #include <curl/curl.h>
 
+#include <cstdlib>
 #include <string>
 #include <sstream>
 
@@ -98,22 +99,16 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
                                                vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<GitHubRESTBindData>();
 
-	// Extract the path from the input
+	// Extract the path from the input — only paths (starting with '/') are accepted
 	std::string path = input.inputs[0].GetValue<string>();
-
-	// Default to https://api.github.com/, but allow it to be overridden (GitHub Enterprise)
-	std::string host = "https://api.github.com";
-	if (StringUtil::StartsWith(path, "http")) {
-		if (!StringUtil::StartsWith(path, "https://")) {
-			throw InvalidInputException("Invalid URL scheme. Only HTTPS is supported.");
-		}
-		size_t pos = path.find("/", 8);
-		if (pos == std::string::npos) {
-			throw InvalidInputException("Invalid URL hostname. Expected format: https://api.github.com/<path>");
-		}
-		host = path.substr(0, pos);
-		path = path.substr(pos);
+	if (!StringUtil::StartsWith(path, "/")) {
+		throw InvalidInputException("github_rest expects a path starting with '/', got: %s", path);
 	}
+
+	// Use GH_HOST to allow overriding the host for GitHub Enterprise, defaulting to api.github.com
+	const char *gh_host_env = std::getenv("GH_HOST");
+	std::string host = "https://";
+	host += (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
 
 	// Set the URL to the combined host and path
 	result->host = host;
