@@ -402,7 +402,6 @@ All macros return typed structs via `json_transform` and paginate automatically 
 | `github_org_outside_collaborators(org, filter := NULL)` | [`GET /orgs/{org}/outside_collaborators`](https://docs.github.com/en/rest/orgs/outside-collaborators#list-outside-collaborators-for-an-organization) |
 | `github_org_installations(org)` | [`GET /orgs/{org}/installations`](https://docs.github.com/en/rest/orgs/orgs#list-app-installations-for-an-organization) |
 | `github_org_events(org)` | [`GET /orgs/{org}/events`](https://docs.github.com/en/rest/activity/events#list-public-organization-events) |
-| `github_org_secret_scanning_alerts(org, state := NULL, secret_type := NULL, resolution := NULL, sort := NULL, direction := NULL)` | [`GET /orgs/{org}/secret-scanning/alerts`](https://docs.github.com/en/rest/secret-scanning/secret-scanning#list-secret-scanning-alerts-for-an-organization) |
 
 ### Teams
 
@@ -439,7 +438,7 @@ All macros return typed structs via `json_transform` and paginate automatically 
 | `github_gist_commits(gist_id)` | [`GET /gists/{gist_id}/commits`](https://docs.github.com/en/rest/gists/gists#list-gist-commits) |
 | `github_gist_revision(gist_id, sha)` | [`GET /gists/{gist_id}/{sha}`](https://docs.github.com/en/rest/gists/gists#get-a-gist-revision) |
 
-### Security
+### Security Advisories
 
 | Macro | API Endpoint |
 |---|---|
@@ -447,6 +446,12 @@ All macros return typed structs via `json_transform` and paginate automatically 
 | `github_security_advisory(ghsa_id)` | [`GET /advisories/{ghsa_id}`](https://docs.github.com/en/rest/security-advisories/global-advisories#get-a-global-security-advisory) |
 | `github_repo_security_advisories(owner, repo, direction := NULL, sort := NULL, before := NULL, after := NULL, ecosystem := NULL, severity := NULL, cwes := NULL, cve_id := NULL, ghsa_id := NULL, state := NULL)` | [`GET /repos/{owner}/{repo}/security-advisories`](https://docs.github.com/en/rest/security-advisories/repository-advisories#list-repository-security-advisories) |
 | `github_repo_security_advisory(owner, repo, ghsa_id)` | [`GET /repos/{owner}/{repo}/security-advisories/{ghsa_id}`](https://docs.github.com/en/rest/security-advisories/repository-advisories#get-a-repository-security-advisory) |
+
+### Secret Scanning
+
+| Macro | API Endpoint |
+|---|---|
+| `github_org_secret_scanning_alerts(org, state := NULL, secret_type := NULL, resolution := NULL, sort := NULL, direction := NULL)` | [`GET /orgs/{org}/secret-scanning/alerts`](https://docs.github.com/en/rest/secret-scanning/secret-scanning#list-secret-scanning-alerts-for-an-organization) |
 | `github_repo_secret_scanning_alerts(owner, repo, state := NULL, secret_type := NULL, resolution := NULL, sort := NULL, direction := NULL)` | [`GET /repos/{owner}/{repo}/secret-scanning/alerts`](https://docs.github.com/en/rest/secret-scanning/secret-scanning#list-secret-scanning-alerts-for-a-repository) |
 | `github_repo_secret_scanning_alert(owner, repo, alert_number)` | [`GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}`](https://docs.github.com/en/rest/secret-scanning/secret-scanning#get-a-secret-scanning-alert) |
 | `github_repo_secret_scanning_alert_locations(owner, repo, alert_number)` | [`GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}/locations`](https://docs.github.com/en/rest/secret-scanning/secret-scanning#list-locations-for-a-secret-scanning-alert) |
@@ -464,11 +469,16 @@ All macros return typed structs via `json_transform` and paginate automatically 
 | `github_search_topics(q)` | [`GET /search/topics`](https://docs.github.com/en/rest/search/search#search-topics) |
 | `github_search_users(q, sort := NULL, direction := NULL)` | [`GET /search/users`](https://docs.github.com/en/rest/search/search#search-users) |
 
-### Apps & Meta
+### Apps
 
 | Macro | API Endpoint |
 |---|---|
 | `github_app(app_slug)` | [`GET /apps/{app_slug}`](https://docs.github.com/en/rest/apps/apps#get-an-app) |
+
+### Meta
+
+| Macro | API Endpoint |
+|---|---|
 | `github_licenses()` | [`GET /licenses`](https://docs.github.com/en/rest/licenses/licenses#get-all-commonly-used-licenses) |
 | `github_meta()` | [`GET /meta`](https://docs.github.com/en/rest/meta/meta#get-apiname-meta-information) |
 | `github_zen()` | [`GET /zen`](https://docs.github.com/en/rest/meta/meta#get-the-zen-of-github) |
