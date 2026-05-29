@@ -1,16 +1,22 @@
 #include "github_extension.hpp"
-#include "duckdb/main/connection.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/parsed_data/create_macro_info.hpp"
 
 namespace duckdb {
 
-void RegisterGitHubMacros(Connection &conn) {
-	conn.Query("LOAD json");
-
-	auto run = [&](const char *sql, const char *name) {
-		auto result = conn.Query(sql);
-		if (result->HasError()) {
-			throw InvalidInputException("Failed to register %s macro: %s", name, result->GetError());
-		}
+void RegisterGitHubMacros(ExtensionLoader &loader) {
+	auto run = [&](const char *sql, const char * /*name*/) {
+		Parser parser;
+		parser.ParseQuery(sql);
+		auto &stmt = parser.statements[0]->Cast<CreateStatement>();
+		auto &info = stmt.info->Cast<CreateMacroInfo>();
+		info.on_conflict = OnCreateConflict::REPLACE_ON_CONFLICT;
+		info.schema = DEFAULT_SCHEMA;
+		info.catalog = INVALID_CATALOG;
+		info.internal = true;
+		loader.RegisterFunction(info);
 	};
 
 	run("CREATE OR REPLACE MACRO github_repo(owner, repo) AS TABLE "
