@@ -482,16 +482,95 @@ static std::string ValueToJSON(const Value &v) {
 	}
 }
 
-static std::string BuildGraphQLBody(const std::string &query, const std::string &variables_json = "") {
+// Builds the GraphQL POST body, merging an optional pagination cursor into the variables
+// object under the "endCursor" key (so the query can reference it as $endCursor).
+static std::string BuildGraphQLBody(const std::string &query, const std::string &variables_json,
+                                    const std::string &cursor = "") {
+	std::string vars = variables_json;
+	if (!cursor.empty()) {
+		std::string cursor_entry = "\"endCursor\":" + JSONEncodeString(cursor);
+		if (vars.empty() || vars == "{}") {
+			vars = "{" + cursor_entry + "}";
+		} else {
+			vars = vars.substr(0, vars.size() - 1) + "," + cursor_entry + "}";
+		}
+	}
 	std::string body = "{\"query\":" + JSONEncodeString(query);
-	if (!variables_json.empty()) {
-		body += ",\"variables\":" + variables_json;
+	if (!vars.empty()) {
+		body += ",\"variables\":" + vars;
 	}
 	return body + "}";
 }
 
+static void SkipJSONWhitespace(const std::string &s, size_t &i) {
+	while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) {
+		i++;
+	}
+}
+
+// Returns true if the response body contains a "hasNextPage": true entry.
+static bool GraphQLHasNextPage(const std::string &body) {
+	const std::string key = "\"hasNextPage\"";
+	size_t pos = 0;
+	while ((pos = body.find(key, pos)) != std::string::npos) {
+		size_t i = pos + key.size();
+		SkipJSONWhitespace(body, i);
+		if (i < body.size() && body[i] == ':') {
+			i++;
+			SkipJSONWhitespace(body, i);
+			if (body.compare(i, 4, "true") == 0) {
+				return true;
+			}
+		}
+		pos += key.size();
+	}
+	return false;
+}
+
+// Extracts the first string-valued "endCursor" from the response body, decoding JSON escapes.
+static std::string GraphQLEndCursor(const std::string &body) {
+	const std::string key = "\"endCursor\"";
+	size_t pos = 0;
+	while ((pos = body.find(key, pos)) != std::string::npos) {
+		size_t i = pos + key.size();
+		SkipJSONWhitespace(body, i);
+		if (i < body.size() && body[i] == ':') {
+			i++;
+			SkipJSONWhitespace(body, i);
+			if (i < body.size() && body[i] == '"') {
+				i++;
+				std::string value;
+				while (i < body.size() && body[i] != '"') {
+					if (body[i] == '\\' && i + 1 < body.size()) {
+						switch (body[i + 1]) {
+						case '"':  value += '"';  break;
+						case '\\': value += '\\'; break;
+						case '/':  value += '/';  break;
+						case 'b':  value += '\b'; break;
+						case 'f':  value += '\f'; break;
+						case 'n':  value += '\n'; break;
+						case 'r':  value += '\r'; break;
+						case 't':  value += '\t'; break;
+						default:   value += body[i + 1]; break;
+						}
+						i += 2;
+					} else {
+						value += body[i++];
+					}
+				}
+				return value;
+			}
+			// "endCursor": null — keep looking for a string-valued one
+		}
+		pos += key.size();
+	}
+	return "";
+}
+
 struct GitHubGraphQLBindData : public GitHubRequestBindData {
-	string post_body;
+	string query;
+	string variables_json;
+	string cursor;
 	bool done = false;
 };
 
@@ -499,12 +578,11 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
                                                    vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<GitHubGraphQLBindData>();
 
-	std::string variables_json;
+	result->query = input.inputs[0].GetValue<string>();
 	auto variables_param = input.named_parameters.find("variables");
 	if (variables_param != input.named_parameters.end()) {
-		variables_json = ValueToJSON(variables_param->second);
+		result->variables_json = ValueToJSON(variables_param->second);
 	}
-	result->post_body = BuildGraphQLBody(input.inputs[0].GetValue<string>(), variables_json);
 
 	std::string host = BindCommonRequestData(context, input, *result);
 	result->url = host + "/graphql";
@@ -521,16 +599,26 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 		return;
 	}
 
+	std::string post_body = BuildGraphQLBody(data.query, data.variables_json, data.cursor);
 	std::string body;
 	GitHubResponseHeaders resp_headers;
-	ExecuteGitHubRequest(data, &data.post_body, body, resp_headers);
+	ExecuteGitHubRequest(data, &post_body, body, resp_headers);
 
 	output.SetValue(0, 0, Value(body));
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
 	output.SetValue(2, 0, BuildRateLimitValue(resp_headers));
 	output.SetCardinality(1);
 
-	data.done = true;
+	// Continue paginating while the response reports another page and yields a new cursor.
+	std::string next_cursor;
+	if (GraphQLHasNextPage(body)) {
+		next_cursor = GraphQLEndCursor(body);
+	}
+	if (next_cursor.empty() || next_cursor == data.cursor) {
+		data.done = true;
+	} else {
+		data.cursor = next_cursor;
+	}
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
