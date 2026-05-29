@@ -86,7 +86,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_user_social_accounts");
 
-	run("CREATE OR REPLACE MACRO github_issues("
+	run("CREATE OR REPLACE MACRO github_repo_issues("
 	    "owner, repo,"
 	    " milestone := NULL, state := NULL, assignee := NULL, creator := NULL,"
 	    " mentioned := NULL, labels := NULL, sort := NULL, direction := NULL, since := NULL"
@@ -98,22 +98,22 @@ void RegisterGitHubMacros(Connection &conn) {
 	    " 'assignee': assignee, 'creator': creator, 'mentioned': mentioned,"
 	    " 'labels': labels, 'sort': sort, 'direction': direction, 'since': since})"
 	    ") _",
-	    "github_issues");
+	    "github_repo_issues");
 
-	run("CREATE OR REPLACE MACRO github_issue(owner, repo, issue_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue(owner, repo, issue_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('issue')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number)"
 	    ") _",
-	    "github_issue");
+	    "github_repo_issue");
 
-	run("CREATE OR REPLACE MACRO github_issue_labels(owner, repo, issue_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_labels(owner, repo, issue_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('label')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/labels',"
 	    " query := {'per_page': '100'})"
 	    ") _",
-	    "github_issue_labels");
+	    "github_repo_issue_labels");
 
 	run("CREATE OR REPLACE MACRO github_repo_labels(owner, repo) AS TABLE "
 	    "SELECT r.* FROM ("
@@ -129,15 +129,15 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_repo_label");
 
-	run("CREATE OR REPLACE MACRO github_issue_timeline(owner, repo, issue_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_timeline(owner, repo, issue_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('timeline-issue-events')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/timeline',"
 	    " query := {'per_page': '100'})"
 	    ") _",
-	    "github_issue_timeline");
+	    "github_repo_issue_timeline");
 
-	run("CREATE OR REPLACE MACRO github_issue_assignees(owner, repo, issue_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_assignees(owner, repo, issue_number) AS TABLE "
 	    "SELECT s.* FROM ("
 	    "SELECT json_transform(a, github_rest_type('simple-user')) AS s "
 	    "FROM ("
@@ -145,22 +145,22 @@ void RegisterGitHubMacros(Connection &conn) {
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number,"
 	    " paginate := false)"
 	    ")) _",
-	    "github_issue_assignees");
+	    "github_repo_issue_assignees");
 
-	run("CREATE OR REPLACE MACRO github_issue_comments(owner, repo, issue_number, since := NULL) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_comments(owner, repo, issue_number, since := NULL) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('issue-comment')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/comments',"
 	    " query := {'per_page': '100', 'since': since})"
 	    ") _",
-	    "github_issue_comments");
+	    "github_repo_issue_comments");
 
-	run("CREATE OR REPLACE MACRO github_issue_comment(owner, repo, comment_id) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_comment(owner, repo, comment_id) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('issue-comment')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/comments/' || comment_id)"
 	    ") _",
-	    "github_issue_comment");
+	    "github_repo_issue_comment");
 
 	run("CREATE OR REPLACE MACRO github_repo_issue_comments(owner, repo, sort := NULL, direction := "
 	    "NULL, since := NULL) AS TABLE "
@@ -171,20 +171,20 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_repo_issue_comments");
 
-	run("CREATE OR REPLACE MACRO github_issue_events(owner, repo, issue_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_events(owner, repo, issue_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('issue-event')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/events',"
 	    " query := {'per_page': '100'})"
 	    ") _",
-	    "github_issue_events");
+	    "github_repo_issue_events");
 
-	run("CREATE OR REPLACE MACRO github_issue_event(owner, repo, event_id) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_issue_event(owner, repo, event_id) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('issue-event')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/events/' || event_id)"
 	    ") _",
-	    "github_issue_event");
+	    "github_repo_issue_event");
 
 	run("CREATE OR REPLACE MACRO github_repo_issue_events(owner, repo) AS TABLE "
 	    "SELECT r.* FROM ("
@@ -591,7 +591,7 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_org_public_members");
 
-	run("CREATE OR REPLACE MACRO github_pulls("
+	run("CREATE OR REPLACE MACRO github_repo_pulls("
 	    "owner, repo, state := NULL, head := NULL, base := NULL, sort := NULL, direction := NULL"
 	    ") AS TABLE "
 	    "SELECT r.* FROM ("
@@ -600,54 +600,54 @@ void RegisterGitHubMacros(Connection &conn) {
 	    " query := {'per_page': '100', 'state': state, 'head': head,"
 	    " 'base': base, 'sort': sort, 'direction': direction})"
 	    ") _",
-	    "github_pulls");
+	    "github_repo_pulls");
 
-	run("CREATE OR REPLACE MACRO github_pull(owner, repo, pull_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_pull(owner, repo, pull_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('pull-request')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number)"
 	    ") _",
-	    "github_pull");
+	    "github_repo_pull");
 
-	run("CREATE OR REPLACE MACRO github_pull_commits(owner, repo, pull_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_pull_commits(owner, repo, pull_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('commit')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/commits',"
 	    " query := {'per_page': '100'})"
 	    ") _",
-	    "github_pull_commits");
+	    "github_repo_pull_commits");
 
-	run("CREATE OR REPLACE MACRO github_pull_files(owner, repo, pull_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_pull_files(owner, repo, pull_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('diff-entry')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/files',"
 	    " query := {'per_page': '100'}, accept := 'application/vnd.github.raw+json')"
 	    ") _",
-	    "github_pull_files");
+	    "github_repo_pull_files");
 
-	run("CREATE OR REPLACE MACRO github_pull_reviews(owner, repo, pull_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_pull_reviews(owner, repo, pull_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('pull-request-review')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/reviews',"
 	    " query := {'per_page': '100'})"
 	    ") _",
-	    "github_pull_reviews");
+	    "github_repo_pull_reviews");
 
-	run("CREATE OR REPLACE MACRO github_pull_review(owner, repo, pull_number, review_id) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_pull_review(owner, repo, pull_number, review_id) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('pull-request-review')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/reviews/' || review_id)"
 	    ") _",
-	    "github_pull_review");
+	    "github_repo_pull_review");
 
-	run("CREATE OR REPLACE MACRO github_pull_review_comments(owner, repo, pull_number) AS TABLE "
+	run("CREATE OR REPLACE MACRO github_repo_pull_review_comments(owner, repo, pull_number) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('pull-request-review-comment')) AS r "
 	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/comments',"
 	    " query := {'per_page': '100'},"
 	    " accept := 'application/vnd.github-commitcomment.raw+json')"
 	    ") _",
-	    "github_pull_review_comments");
+	    "github_repo_pull_review_comments");
 
 	run("CREATE OR REPLACE MACRO github_ratelimit() AS TABLE "
 	    "SELECT r.* FROM ("
