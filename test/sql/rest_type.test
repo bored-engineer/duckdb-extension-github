@@ -4,23 +4,11 @@
 
 require github
 
-# Single-argument form returns the JSON type schema
+# Returns the JSON type schema for a known type
 query I
 SELECT github_rest_type('actions-artifact-and-log-retention');
 ----
 {"days":"INT64"}
-
-# Two-argument form with list=false returns the same schema
-query I
-SELECT github_rest_type('actions-artifact-and-log-retention', false);
-----
-{"days":"INT64"}
-
-# Two-argument form with list=true wraps the schema in an array
-query I
-SELECT github_rest_type('actions-artifact-and-log-retention', true);
-----
-[{"days":"INT64"}]
 
 # Unknown type names raise an error
 statement error

@@ -158,20 +158,16 @@ FROM github_graphql(
 
 ---
 
-### `github_rest_type(name)`  /  `github_rest_type(name, list)`
+### `github_rest_type(name)`
 
-Returns the JSON type schema string for a named GitHub API type, for use with DuckDB's `json_transform()` function. Pass `true` as the second argument to wrap the schema in an array (`[...]`).
+Returns the JSON type schema string for a named GitHub API type, for use with DuckDB's `json_transform()` function.
 
 **Examples:**
 
 ```sql
--- Transform REST response rows into typed structs
+-- Transform each REST response row into a typed struct
 SELECT json_transform(data, github_rest_type('repository'))
 FROM github_rest('/users/bored-engineer/repos?per_page=100');
-
--- List form (array response)
-SELECT UNNEST(json_transform(data, github_rest_type('repository', true)))
-FROM github_rest('/users/bored-engineer/repos?per_page=100', paginate = false);
 ```
 
 ## Rate limits
