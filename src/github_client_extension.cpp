@@ -256,10 +256,10 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("ratelimit");
 	child_list_t<LogicalType> ratelimit_children;
-	ratelimit_children.emplace_back("limit", LogicalType::BIGINT);
-	ratelimit_children.emplace_back("remaining", LogicalType::BIGINT);
-	ratelimit_children.emplace_back("used", LogicalType::BIGINT);
-	ratelimit_children.emplace_back("reset", LogicalType::BIGINT);
+	ratelimit_children.emplace_back("limit", LogicalType::USMALLINT);
+	ratelimit_children.emplace_back("remaining", LogicalType::USMALLINT);
+	ratelimit_children.emplace_back("used", LogicalType::USMALLINT);
+	ratelimit_children.emplace_back("reset", LogicalType::TIMESTAMP_S);
 	ratelimit_children.emplace_back("resource", LogicalType::VARCHAR);
 	return_types.emplace_back(LogicalType::STRUCT(std::move(ratelimit_children)));
 
@@ -326,14 +326,18 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	}
 
 	// Build the ratelimit struct value (NULL for any absent headers)
-	auto parse_int_header = [](const std::string &s) -> Value {
-		return s.empty() ? Value(LogicalType::BIGINT) : Value::BIGINT(std::stoll(s));
+	auto parse_usmallint_header = [](const std::string &s) -> Value {
+		return s.empty() ? Value(LogicalType::USMALLINT) : Value::USMALLINT(static_cast<uint16_t>(std::stoul(s)));
+	};
+	auto parse_reset_header = [](const std::string &s) -> Value {
+		return s.empty() ? Value(LogicalType::TIMESTAMP_S)
+		                 : Value::TIMESTAMPSEC(timestamp_sec_t(std::stoll(s)));
 	};
 	child_list_t<Value> ratelimit_values;
-	ratelimit_values.emplace_back("limit", parse_int_header(resp_headers.ratelimit_limit));
-	ratelimit_values.emplace_back("remaining", parse_int_header(resp_headers.ratelimit_remaining));
-	ratelimit_values.emplace_back("used", parse_int_header(resp_headers.ratelimit_used));
-	ratelimit_values.emplace_back("reset", parse_int_header(resp_headers.ratelimit_reset));
+	ratelimit_values.emplace_back("limit", parse_usmallint_header(resp_headers.ratelimit_limit));
+	ratelimit_values.emplace_back("remaining", parse_usmallint_header(resp_headers.ratelimit_remaining));
+	ratelimit_values.emplace_back("used", parse_usmallint_header(resp_headers.ratelimit_used));
+	ratelimit_values.emplace_back("reset", parse_reset_header(resp_headers.ratelimit_reset));
 	ratelimit_values.emplace_back("resource", resp_headers.ratelimit_resource.empty()
 	                                               ? Value(LogicalType::VARCHAR)
 	                                               : Value(resp_headers.ratelimit_resource));
