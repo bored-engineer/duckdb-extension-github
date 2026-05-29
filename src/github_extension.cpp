@@ -761,6 +761,7 @@ struct GitHubContentsBindData : public TableFunctionData {
 	std::string path;
 	std::string ref;
 	bool ignore_incomplete = false;
+	bool include_root = true;
 	bool done = false;
 };
 
@@ -799,6 +800,11 @@ static unique_ptr<FunctionData> GitHubContentsBind(ClientContext &context, Table
 	auto ignore_incomplete_param = input.named_parameters.find("ignore_incomplete");
 	if (ignore_incomplete_param != input.named_parameters.end()) {
 		result->ignore_incomplete = ignore_incomplete_param->second.GetValue<bool>();
+	}
+
+	auto include_root_param = input.named_parameters.find("include_root");
+	if (include_root_param != input.named_parameters.end()) {
+		result->include_root = include_root_param->second.GetValue<bool>();
 	}
 
 	names.emplace_back("type");
@@ -905,10 +911,13 @@ static void GitHubContentsFunction(ClientContext & /*context*/, TableFunctionInp
 			    "github_contents: directory listing is incomplete (1000 entries returned, GitHub's maximum). "
 			    "Use ignore_incomplete=true to suppress this error.");
 		}
+		idx_t count = 0;
+		if (data.include_root) {
+			GitHubContentsEmitRow(root, output, count++);
+		}
 		yyjson_arr_iter it;
 		yyjson_arr_iter_init(entries, &it);
 		yyjson_val *entry;
-		idx_t count = 0;
 		while ((entry = yyjson_arr_iter_next(&it))) {
 			GitHubContentsEmitRow(entry, output, count++);
 		}
@@ -971,6 +980,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_contents_function.named_parameters["host"] = LogicalType::VARCHAR;
 	github_contents_function.named_parameters["api_version"] = LogicalType::VARCHAR;
 	github_contents_function.named_parameters["ignore_incomplete"] = LogicalType::BOOLEAN;
+	github_contents_function.named_parameters["include_root"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(github_contents_function);
 	ScalarFunctionSet github_contents_raw_set("github_contents_raw");
 	github_contents_raw_set.AddFunction(ScalarFunction(
