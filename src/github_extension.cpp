@@ -819,6 +819,10 @@ static unique_ptr<FunctionData> GitHubContentsBind(ClientContext &context, Table
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("download_url");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("submodule_git_url");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("target");
+	return_types.emplace_back(LogicalType::VARCHAR);
 
 	return std::move(result);
 }
@@ -858,6 +862,8 @@ static void GitHubContentsEmitRow(yyjson_val *obj, DataChunk &output, idx_t row)
 	output.SetValue(6, row, get_str("url"));
 	output.SetValue(7, row, get_str("git_url"));
 	output.SetValue(8, row, get_str("download_url"));
+	output.SetValue(9, row, get_str("submodule_git_url"));
+	output.SetValue(10, row, get_str("target"));
 }
 
 static void GitHubContentsFunction(ClientContext & /*context*/, TableFunctionInput &data_p, DataChunk &output) {
