@@ -587,6 +587,8 @@ static unique_ptr<FunctionData> GitHubGraphQLBind(ClientContext &context, TableF
 	result->url = host + "/graphql";
 
 	AddCommonResultColumns(return_types, names);
+	names.emplace_back("errors");
+	return_types.emplace_back(LogicalType::LIST(LogicalType::JSON()));
 
 	return std::move(result);
 }
@@ -620,7 +622,7 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 		throw InvalidInputException("GraphQL query returned errors: %s", message);
 	}
 
-	// Extract just the "data" value to return, and the next pagination cursor,
+	// Extract the "data" value, the "errors" list, and the next pagination cursor,
 	// while the document is still parsed
 	yyjson_val *data_val = yyjson_is_obj(root) ? yyjson_obj_get(root, "data") : nullptr;
 	Value data_value(LogicalType::JSON());
@@ -631,6 +633,21 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 			free(data_json);
 		}
 	}
+
+	vector<Value> error_values;
+	if (errors && yyjson_is_arr(errors)) {
+		yyjson_arr_iter it;
+		yyjson_arr_iter_init(errors, &it);
+		yyjson_val *e;
+		while ((e = yyjson_arr_iter_next(&it))) {
+			char *e_json = yyjson_val_write(e, 0, nullptr);
+			if (e_json) {
+				error_values.emplace_back(Value(e_json).DefaultCastAs(LogicalType::JSON()));
+				free(e_json);
+			}
+		}
+	}
+	Value errors_value = Value::LIST(LogicalType::JSON(), std::move(error_values));
 
 	std::string next_cursor;
 	if (YYJSONFindTrue(root, "hasNextPage")) {
@@ -643,6 +660,7 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	output.SetValue(0, 0, data_value);
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
 	output.SetValue(2, 0, BuildRateLimitValue(resp_headers));
+	output.SetValue(3, 0, errors_value);
 	output.SetCardinality(1);
 
 	// Continue paginating while the response reports another page and yields a new cursor.
