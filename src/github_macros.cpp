@@ -486,6 +486,37 @@ void RegisterGitHubMacros(Connection &conn) {
 	    ") _",
 	    "github_repo_rules_for_branch");
 
+	run("CREATE OR REPLACE MACRO github_org_rulesets(org, includes_parents := NULL) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/rulesets',"
+	    " query := {'per_page': '100', 'includes_parents': includes_parents})"
+	    ") _",
+	    "github_org_rulesets");
+
+	run("CREATE OR REPLACE MACRO github_org_ruleset(org, ruleset_id, includes_parents := NULL) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/rulesets/' || ruleset_id,"
+	    " query := {'includes_parents': includes_parents})"
+	    ") _",
+	    "github_org_ruleset");
+
+	run("CREATE OR REPLACE MACRO github_org_ruleset_history(org, ruleset_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/rulesets/' || ruleset_id || '/history',"
+	    " query := {'per_page': '100'})"
+	    ") _",
+	    "github_org_ruleset_history");
+
+	run("CREATE OR REPLACE MACRO github_org_ruleset_history_version(org, ruleset_id, version_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	    "FROM github_rest('/orgs/' || org || '/rulesets/' || ruleset_id || '/history/' || version_id)"
+	    ") _",
+	    "github_org_ruleset_history_version");
+
 	run("CREATE OR REPLACE MACRO github_repo_webhooks(owner, repo) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('hook')) AS r "
