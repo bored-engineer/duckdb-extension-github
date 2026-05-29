@@ -63,15 +63,15 @@ Makes a GET request to the GitHub REST API. When the response is a JSON array, o
 
 ```sql
 -- Get a single repository
-SELECT data->>'$.full_name', data->>'$.stargazers_count'
+SELECT data->>'full_name', data->>'stargazers_count'
 FROM github_rest('/repos/duckdb/duckdb');
 
 -- List all repos for a user (paginated, one row per repo)
-SELECT data->>'$.name', data->>'$.language'
+SELECT data->>'name', data->>'language'
 FROM github_rest('/users/bored-engineer/repos?per_page=100');
 
 -- Search issues with a custom header
-SELECT data->>'$.title'
+SELECT data->>'title'
 FROM github_rest(
     '/search/issues?q=is:open+repo:duckdb/duckdb',
     headers = {'X-Custom-Header': 'value'}
@@ -84,7 +84,7 @@ SELECT count(*) FROM github_rest(
 );
 
 -- GitHub Enterprise
-SELECT data->>'$.name'
+SELECT data->>'name'
 FROM github_rest('/repos/owner/repo', host = 'github.mycompany.com');
 ```
 
@@ -124,7 +124,7 @@ Include `pageInfo { hasNextPage endCursor }` in your query and declare `$endCurs
 
 ```sql
 -- Get the authenticated user's login
-SELECT data->>'$.viewer.login'
+SELECT data->'viewer'->>'login'
 FROM github_graphql('query { viewer { login } }');
 
 -- Paginate through all repositories for a user
@@ -142,14 +142,14 @@ FROM github_graphql(
 );
 
 -- Ignore errors and inspect them manually
-SELECT data, errors[1]->>'$.message' AS error
+SELECT data, errors[1]->>'message' AS error
 FROM github_graphql(
     'query { viewer { nonexistentField } }',
     ignore_errors = true
 );
 
 -- GitHub Enterprise
-SELECT data->>'$.viewer.login'
+SELECT data->'viewer'->>'login'
 FROM github_graphql(
     'query { viewer { login } }',
     host = 'github.mycompany.com'
