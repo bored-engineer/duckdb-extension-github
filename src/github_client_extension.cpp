@@ -8,14 +8,10 @@
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/database.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
-#ifdef USE_ZLIB
-#define CPPHTTPLIB_ZLIB_SUPPORT
-#endif
-
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "httplib.hpp"
+#include <curl/curl.h>
 
 #include <string>
 #include <sstream>
@@ -76,59 +72,31 @@ static std::string ParseLinkNextURL(const std::string &link_header_content) {
 	return "";
 }
 
-// Helper function to return the description of one HTTP error.
-static std::string GetHttpErrorMessage(const duckdb_httplib_openssl::Result &res, const std::string &request_type) {
-	std::string err_message = "HTTP " + request_type + " request failed. ";
+static size_t CurlWriteCallback(char *ptr, size_t size, size_t nmemb, void *userdata) {
+	auto *body = static_cast<std::string *>(userdata);
+	body->append(ptr, size * nmemb);
+	return size * nmemb;
+}
 
-	if (res) {
-		err_message += "Status: " + std::to_string(res->status) + ", Reason: " + res->body;
-	} else {
-		switch (res.error()) {
-		case duckdb_httplib_openssl::Error::Connection:
-			err_message += "Connection error.";
-			break;
-		case duckdb_httplib_openssl::Error::BindIPAddress:
-			err_message += "Failed to bind IP address.";
-			break;
-		case duckdb_httplib_openssl::Error::Read:
-			err_message += "Error reading response.";
-			break;
-		case duckdb_httplib_openssl::Error::Write:
-			err_message += "Error writing request.";
-			break;
-		case duckdb_httplib_openssl::Error::ExceedRedirectCount:
-			err_message += "Too many redirects.";
-			break;
-		case duckdb_httplib_openssl::Error::Canceled:
-			err_message += "Request was canceled.";
-			break;
-		case duckdb_httplib_openssl::Error::SSLConnection:
-			err_message += "SSL connection failed.";
-			break;
-		case duckdb_httplib_openssl::Error::SSLLoadingCerts:
-			err_message += "Failed to load SSL certificates.";
-			break;
-		case duckdb_httplib_openssl::Error::SSLServerVerification:
-			err_message += "SSL server verification failed.";
-			break;
-		case duckdb_httplib_openssl::Error::UnsupportedMultipartBoundaryChars:
-			err_message += "Unsupported characters in multipart boundary.";
-			break;
-		case duckdb_httplib_openssl::Error::Compression:
-			err_message += "Error during compression.";
-			break;
-		default:
-			err_message += "Unknown error.";
-			break;
+static size_t CurlHeaderCallback(char *buffer, size_t size, size_t nitems, void *userdata) {
+	auto *link_header = static_cast<std::string *>(userdata);
+	std::string header(buffer, size * nitems);
+	const std::string prefix = "link: ";
+	std::string lower_header = StringUtil::Lower(header.substr(0, prefix.size()));
+	if (lower_header == prefix) {
+		*link_header = header.substr(prefix.size());
+		while (!link_header->empty() && (link_header->back() == '\r' || link_header->back() == '\n')) {
+			link_header->pop_back();
 		}
 	}
-	return err_message;
+	return size * nitems;
 }
 
 struct GitHubRESTBindData : public TableFunctionData {
 	string url;
 	string host;
-	unique_ptr<duckdb_httplib_openssl::Client> client;
+	string token;
+	string user_agent;
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -156,11 +124,6 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	result->host = host;
 	result->url = host + path;
 
-	// Setup the HTTP client to use for each request
-	result->client = make_uniq<duckdb_httplib_openssl::Client>(host);
-	result->client->set_read_timeout(60, 0);   // 60 seconds
-	result->client->set_follow_location(true); // Follow redirects
-
 	// Use the SecretManager to find the 'http' bearer token for GitHub
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
@@ -181,12 +144,12 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 		throw InvalidInputException("Invalid secret type for GitHub secret");
 	}
 
-	// Attach the bearer token to every request
 	Value token_value;
 	if (!kv_secret->TryGetValue("bearer_token", token_value)) {
 		throw InvalidInputException("'bearer_token' not found for GitHub secret");
 	}
-	result->client->set_bearer_token_auth(token_value.ToString());
+	result->token = token_value.ToString();
+	result->user_agent = StringUtil::Format("%s %s", context.db->config.UserAgent(), DuckDB::SourceID());
 
 	// Set the return types and names
 	names.emplace_back("url");
@@ -205,19 +168,57 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 		return;
 	}
 
-	// Perform the HTTP GET request
-	auto res = data.client->Get(data.url);
-	if (!res || res->status != 200) {
-		throw InvalidInputException(GetHttpErrorMessage(res, "GET"));
+	CURL *curl = curl_easy_init();
+	if (!curl) {
+		throw InvalidInputException("Failed to initialize curl");
+	}
+
+	std::string body;
+	std::string link_header;
+	char errbuf[CURL_ERROR_SIZE] = {0};
+
+	std::string auth_header = "Authorization: Bearer " + data.token;
+	struct curl_slist *headers = nullptr;
+	std::string user_agent_header = "User-Agent: " + data.user_agent;
+	headers = curl_slist_append(headers, auth_header.c_str());
+	headers = curl_slist_append(headers, user_agent_header.c_str());
+	headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+	headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
+
+	curl_easy_setopt(curl, CURLOPT_URL, data.url.c_str());
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, CurlHeaderCallback);
+	curl_easy_setopt(curl, CURLOPT_HEADERDATA, &link_header);
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+
+	CURLcode res_code = curl_easy_perform(curl);
+
+	long http_status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+
+	curl_slist_free_all(headers);
+	curl_easy_cleanup(curl);
+
+	if (res_code != CURLE_OK) {
+		std::string err_message = "HTTP GET request failed: ";
+		err_message += errbuf[0] ? errbuf : curl_easy_strerror(res_code);
+		throw InvalidInputException(err_message);
+	}
+	if (http_status != 200) {
+		throw InvalidInputException("HTTP GET request failed. Status: %ld, Reason: %s", http_status, body.c_str());
 	}
 
 	// Store the output
 	output.SetValue(0, 0, Value(data.url));
-	output.SetValue(1, 0, Value(res->body));
+	output.SetValue(1, 0, Value(body));
 	output.SetCardinality(1);
 
 	// Check for the "Link" header to see if there's a next page
-	std::string next_url = ParseLinkNextURL(res->get_header_value("Link"));
+	std::string next_url = link_header.empty() ? "" : ParseLinkNextURL(link_header);
 	if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
 		throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
 	}
