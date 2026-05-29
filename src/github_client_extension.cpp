@@ -504,46 +504,18 @@ static std::string BuildGraphQLBody(const std::string &query, const std::string 
 	return body;
 }
 
-// Recursively searches a JSON value for any key with a boolean-true value.
-static bool YYJSONFindTrue(yyjson_val *val, const char *key) {
+// Recursively searches a JSON value for the first "pageInfo" key whose value is an object.
+static yyjson_val *YYJSONFindPageInfo(yyjson_val *val) {
 	if (yyjson_is_obj(val)) {
 		yyjson_obj_iter it;
 		yyjson_obj_iter_init(val, &it);
 		yyjson_val *k;
 		while ((k = yyjson_obj_iter_next(&it))) {
 			yyjson_val *v = yyjson_obj_iter_get_val(k);
-			if (strcmp(yyjson_get_str(k), key) == 0 && yyjson_is_true(v)) {
-				return true;
+			if (strcmp(yyjson_get_str(k), "pageInfo") == 0 && yyjson_is_obj(v)) {
+				return v;
 			}
-			if (YYJSONFindTrue(v, key)) {
-				return true;
-			}
-		}
-	} else if (yyjson_is_arr(val)) {
-		yyjson_arr_iter it;
-		yyjson_arr_iter_init(val, &it);
-		yyjson_val *v;
-		while ((v = yyjson_arr_iter_next(&it))) {
-			if (YYJSONFindTrue(v, key)) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-// Recursively searches a JSON value for the first string value under the given key.
-static const char *YYJSONFindString(yyjson_val *val, const char *key) {
-	if (yyjson_is_obj(val)) {
-		yyjson_obj_iter it;
-		yyjson_obj_iter_init(val, &it);
-		yyjson_val *k;
-		while ((k = yyjson_obj_iter_next(&it))) {
-			yyjson_val *v = yyjson_obj_iter_get_val(k);
-			if (strcmp(yyjson_get_str(k), key) == 0 && yyjson_is_str(v)) {
-				return yyjson_get_str(v);
-			}
-			if (const char *found = YYJSONFindString(v, key)) {
+			if (yyjson_val *found = YYJSONFindPageInfo(v)) {
 				return found;
 			}
 		}
@@ -552,7 +524,7 @@ static const char *YYJSONFindString(yyjson_val *val, const char *key) {
 		yyjson_arr_iter_init(val, &it);
 		yyjson_val *v;
 		while ((v = yyjson_arr_iter_next(&it))) {
-			if (const char *found = YYJSONFindString(v, key)) {
+			if (yyjson_val *found = YYJSONFindPageInfo(v)) {
 				return found;
 			}
 		}
@@ -663,9 +635,11 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	Value warnings_value = YYJSONArrayToJSONList(warnings);
 
 	std::string next_cursor;
-	if (YYJSONFindTrue(root, "hasNextPage")) {
-		if (const char *cursor = YYJSONFindString(root, "endCursor")) {
-			next_cursor = cursor;
+	if (yyjson_val *page_info = YYJSONFindPageInfo(root)) {
+		yyjson_val *has_next = yyjson_obj_get(page_info, "hasNextPage");
+		yyjson_val *end_cursor = yyjson_obj_get(page_info, "endCursor");
+		if (has_next && yyjson_is_true(has_next) && end_cursor && yyjson_is_str(end_cursor)) {
+			next_cursor = yyjson_get_str(end_cursor);
 		}
 	}
 	yyjson_doc_free(doc);
