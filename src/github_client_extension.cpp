@@ -105,11 +105,17 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 		throw InvalidInputException("github_rest expects a path starting with '/', got: %s", path);
 	}
 
-	// Use GH_HOST to allow overriding the host for GitHub Enterprise, defaulting to api.github.com
-	const char *gh_host_env = std::getenv("GH_HOST");
-	bool is_enterprise = gh_host_env && gh_host_env[0];
-	std::string host = "https://";
-	host += is_enterprise ? gh_host_env : "api.github.com";
+	// Resolve host: named parameter > GH_HOST env var > api.github.com
+	std::string hostname;
+	auto host_param = input.named_parameters.find("host");
+	if (host_param != input.named_parameters.end()) {
+		hostname = host_param->second.GetValue<string>();
+	} else {
+		const char *gh_host_env = std::getenv("GH_HOST");
+		hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
+	}
+	bool is_enterprise = hostname != "api.github.com";
+	std::string host = "https://" + hostname;
 
 	// Set the URL to the combined host and path
 	result->host = host;
@@ -240,6 +246,7 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 
 static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
+	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(github_rest_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
