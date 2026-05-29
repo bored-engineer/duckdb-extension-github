@@ -213,6 +213,64 @@ static vector<pair<string, string>> ParseExtraHeaders(TableFunctionBindInput &in
 	return result;
 }
 
+// Parses the optional 'query' named parameter (a STRUCT or MAP(VARCHAR,VARCHAR)) into name/value pairs.
+static vector<pair<string, string>> ParseQueryParams(TableFunctionBindInput &input) {
+	vector<pair<string, string>> result;
+	auto query_param = input.named_parameters.find("query");
+	if (query_param == input.named_parameters.end()) {
+		return result;
+	}
+	auto &qval = query_param->second;
+	if (qval.type().id() == LogicalTypeId::STRUCT) {
+		auto &children = StructValue::GetChildren(qval);
+		for (idx_t i = 0; i < children.size(); i++) {
+			if (children[i].IsNull()) {
+				continue;
+			}
+			auto val = children[i].GetValue<string>();
+			if (val.empty()) {
+				continue;
+			}
+			result.emplace_back(StructType::GetChildName(qval.type(), i), std::move(val));
+		}
+	} else if (qval.type().id() == LogicalTypeId::MAP) {
+		// MAP is stored as a list of {key, value} structs
+		for (auto &entry : MapValue::GetChildren(qval)) {
+			auto &kv = StructValue::GetChildren(entry);
+			if (kv[1].IsNull()) {
+				continue;
+			}
+			auto val = kv[1].GetValue<string>();
+			if (val.empty()) {
+				continue;
+			}
+			result.emplace_back(kv[0].GetValue<string>(), std::move(val));
+		}
+	} else {
+		throw InvalidInputException("'query' must be a STRUCT or MAP(VARCHAR, VARCHAR), got %s",
+		                            qval.type().ToString());
+	}
+	return result;
+}
+
+// Builds a percent-encoded query string from name/value pairs using curl_easy_escape.
+static std::string BuildQueryString(const vector<pair<string, string>> &params) {
+	std::string result;
+	for (auto &kv : params) {
+		if (!result.empty()) {
+			result += '&';
+		}
+		char *enc_key = curl_easy_escape(nullptr, kv.first.c_str(), (int)kv.first.size());
+		char *enc_val = curl_easy_escape(nullptr, kv.second.c_str(), (int)kv.second.size());
+		result += enc_key;
+		result += '=';
+		result += enc_val;
+		curl_free(enc_key);
+		curl_free(enc_val);
+	}
+	return result;
+}
+
 // Resolves host, token, accept, api_version, headers and user-agent into the common bind data,
 // returning the resolved host (e.g. "https://api.github.com").
 static std::string BindCommonRequestData(ClientContext &context, TableFunctionBindInput &input,
@@ -363,6 +421,7 @@ static Value BuildHeadersMapValue(const GitHubResponseHeaders &resp_headers) {
 struct GitHubRESTBindData : public GitHubRequestBindData {
 	string host;
 	bool paginate = true;
+	string extract; // when non-empty, extract this key's array from object responses
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -379,9 +438,21 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	result->host = host;
 	result->url = host + path;
 
+	auto query_params = ParseQueryParams(input);
+	if (!query_params.empty()) {
+		std::string qs = BuildQueryString(query_params);
+		result->url += (path.find('?') != std::string::npos ? '&' : '?');
+		result->url += qs;
+	}
+
 	auto paginate_param = input.named_parameters.find("paginate");
 	if (paginate_param != input.named_parameters.end()) {
 		result->paginate = paginate_param->second.GetValue<bool>();
+	}
+
+	auto extract_param = input.named_parameters.find("extract_key");
+	if (extract_param != input.named_parameters.end()) {
+		result->extract = extract_param->second.GetValue<string>();
 	}
 
 	names.emplace_back("url");
@@ -408,13 +479,18 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	Value page_request_id = RequestIdValue(resp_headers);
 
 	// An array response yields one row per element; anything else yields the whole body.
+	// When 'extract' is set, the named key's array is extracted from an object response first.
 	// GitHub never returns more than 100 items per page, which fits in one chunk.
 	yyjson_doc *doc = yyjson_read(body.c_str(), body.size(), 0);
 	yyjson_val *root = doc ? yyjson_doc_get_root(doc) : nullptr;
 	idx_t count = 0;
-	if (root && yyjson_is_arr(root)) {
+	yyjson_val *arr = root;
+	if (!data.extract.empty() && root && yyjson_is_obj(root)) {
+		arr = yyjson_obj_get(root, data.extract.c_str());
+	}
+	if (arr && yyjson_is_arr(arr)) {
 		yyjson_arr_iter it;
-		yyjson_arr_iter_init(root, &it);
+		yyjson_arr_iter_init(arr, &it);
 		yyjson_val *item;
 		while ((item = yyjson_arr_iter_next(&it))) {
 			char *item_json = yyjson_val_write(item, 0, nullptr);
@@ -965,7 +1041,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["headers"] = LogicalType::ANY;
+	github_rest_function.named_parameters["query"] = LogicalType::ANY;
 	github_rest_function.named_parameters["paginate"] = LogicalType::BOOLEAN;
+	github_rest_function.named_parameters["extract_key"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(github_rest_function);
 	TableFunction github_graphql_function("github_graphql", {LogicalType::VARCHAR}, GitHubGraphQLFunction,
 	                                      GitHubGraphQLBind);
@@ -999,102 +1077,977 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction("github_rest_type", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GitHubRESTTypeFunction));
 
 	Connection conn(loader.GetDatabaseInstance());
-	auto result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_repo(owner, repo) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('repository')) AS r "
-	    "FROM github_rest('/repos/' || owner || '/' || repo)"
-	    ") _");
+	conn.Query("LOAD json");
+	auto result = conn.Query("CREATE OR REPLACE MACRO github_repo(owner, repo) AS TABLE "
+	                         "SELECT r.* FROM ("
+	                         "SELECT json_transform(data, github_rest_type('repository')) AS r "
+	                         "FROM github_rest('/repos/' || owner || '/' || repo)"
+	                         ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_repo macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('public-user')) AS r "
-	    "FROM github_rest('/users/' || username)"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('public-user')) AS r "
+	                    "FROM github_rest('/users/' || username)"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user_followers(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
-	    "FROM github_rest('/users/' || username || '/followers?per_page=100')"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_followers(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
+	                    "FROM github_rest('/users/' || username || '/followers', query := {'per_page': '100'})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_followers macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user_gpg_keys(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('gpg-key')) AS r "
-	    "FROM github_rest('/users/' || username || '/gpg_keys?per_page=100')"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_gpg_keys(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('gpg-key')) AS r "
+	                    "FROM github_rest('/users/' || username || '/gpg_keys', query := {'per_page': '100'})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_gpg_keys macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user_ssh_keys(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('key')) AS r "
-	    "FROM github_rest('/users/' || username || '/keys?per_page=100')"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_ssh_keys(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('key')) AS r "
+	                    "FROM github_rest('/users/' || username || '/keys', query := {'per_page': '100'})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_ssh_keys macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user_ssh_signing_keys(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('ssh-signing-key')) AS r "
-	    "FROM github_rest('/users/' || username || '/ssh_signing_keys?per_page=100')"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_ssh_signing_keys(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('ssh-signing-key')) AS r "
+	                    "FROM github_rest('/users/' || username || '/ssh_signing_keys', query := {'per_page': '100'})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_ssh_signing_keys macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_org_repos("
-	    "org, \"type\" := NULL, sort := NULL, direction := NULL"
-	    ") AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('minimal-repository')) AS r "
-	    "FROM github_rest("
-	    "'/orgs/' || org || '/repos?per_page=100'"
-	    " || CASE WHEN \"type\"    IS NOT NULL THEN '&type='      || \"type\"    ELSE '' END"
-	    " || CASE WHEN sort      IS NOT NULL THEN '&sort='      || sort      ELSE '' END"
-	    " || CASE WHEN direction IS NOT NULL THEN '&direction=' || direction ELSE '' END"
-	    ")"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_repos("
+	                    "org, \"type\" := NULL, sort := NULL, direction := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('minimal-repository')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/repos',"
+	                    " query := {'per_page': '100', 'type': \"type\", 'sort': sort, 'direction': direction})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_org_repos macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_org(org) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('organization-full')) AS r "
-	    "FROM github_rest('/orgs/' || org)"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_org(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('organization-full')) AS r "
+	                    "FROM github_rest('/orgs/' || org)"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_org macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user_orgs(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('organization-simple')) AS r "
-	    "FROM github_rest('/users/' || username || '/orgs?per_page=100')"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_orgs(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('organization-simple')) AS r "
+	                    "FROM github_rest('/users/' || username || '/orgs', query := {'per_page': '100'})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_orgs macro: %s", result->GetError());
 	}
-	result = conn.Query(
-	    "CREATE OR REPLACE MACRO github_user_social_accounts(username) AS TABLE "
-	    "SELECT r.* FROM ("
-	    "SELECT json_transform(data, github_rest_type('social-account')) AS r "
-	    "FROM github_rest('/users/' || username || '/social_accounts?per_page=100')"
-	    ") _");
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_social_accounts(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('social-account')) AS r "
+	                    "FROM github_rest('/users/' || username || '/social_accounts', query := {'per_page': '100'})"
+	                    ") _");
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_social_accounts macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issues("
+	                    "owner, repo,"
+	                    " milestone := NULL, state := NULL, assignee := NULL, creator := NULL,"
+	                    " mentioned := NULL, labels := NULL, sort := NULL, direction := NULL, since := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues',"
+	                    " query := {'per_page': '100', 'milestone': milestone, 'state': state,"
+	                    " 'assignee': assignee, 'creator': creator, 'mentioned': mentioned,"
+	                    " 'labels': labels, 'sort': sort, 'direction': direction, 'since': since})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issues macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issue(owner, repo, issue_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issue_labels(owner, repo, issue_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('label')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/labels',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_labels macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_labels(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('label')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/labels', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_labels macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_label(owner, repo, name) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('label')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/labels/' || name)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_label macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_issue_timeline(owner, repo, issue_number) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('timeline-issue-events')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/timeline',"
+	               " query := {'per_page': '100'})"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_timeline macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issue_assignees(owner, repo, issue_number) AS TABLE "
+	                    "SELECT s.* FROM ("
+	                    "SELECT json_transform(a, github_rest_type('simple-user')) AS s "
+	                    "FROM ("
+	                    "SELECT unnest(json_transform(data, '{\"assignees\":[\"JSON\"]}').assignees) AS a "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number,"
+	                    " paginate := false)"
+	                    ")) _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_assignees macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_issue_comments(owner, repo, issue_number, since := NULL) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('issue-comment')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/comments',"
+	               " query := {'per_page': '100', 'since': since})"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_comments macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issue_comment(owner, repo, comment_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue-comment')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/comments/' || comment_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_comment macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_issue_comments(owner, repo, sort := NULL, direction := "
+	                    "NULL, since := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue-comment')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/comments',"
+	                    " query := {'per_page': '100', 'sort': sort, 'direction': direction, 'since': since})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_issue_comments macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issue_events(owner, repo, issue_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue-event')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/' || issue_number || '/events',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_events macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_issue_event(owner, repo, event_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue-event')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/events/' || event_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_issue_event macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_issue_events(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue-event')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/issues/events',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_issue_events macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_teams(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('team')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/teams', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_teams macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_team(org, team_slug) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('team-full')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/teams/' || team_slug)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_team macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_team_repos(org, team_slug) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('minimal-repository')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/teams/' || team_slug || '/repos',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_team_repos macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_team_teams(org, team_slug) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('team')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/teams/' || team_slug || '/teams',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_team_teams macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_team_members(org, team_slug, role := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/teams/' || team_slug || '/members',"
+	                    " query := {'per_page': '100', 'role': role})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_team_members macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_team_member(org, team_slug, username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('team-membership')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/teams/' || team_slug || '/memberships/' || username)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_team_member macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_security_advisories("
+	                    "ghsa_id := NULL, cve_id := NULL, ecosystem := NULL, severity := NULL,"
+	                    " cwes := NULL, is_withdrawn := NULL, affects := NULL,"
+	                    " published := NULL, updated := NULL, modified := NULL,"
+	                    " type := NULL, direction := NULL, sort := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('global-advisory')) AS r "
+	                    "FROM github_rest('/advisories',"
+	                    " query := {'per_page': '100', 'ghsa_id': ghsa_id, 'cve_id': cve_id,"
+	                    " 'ecosystem': ecosystem, 'severity': severity, 'cwes': cwes,"
+	                    " 'is_withdrawn': is_withdrawn, 'affects': affects,"
+	                    " 'published': published, 'updated': updated, 'modified': modified,"
+	                    " 'type': type, 'direction': direction, 'sort': sort})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_security_advisories macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_security_advisory(ghsa_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('global-advisory')) AS r "
+	                    "FROM github_rest('/advisories/' || ghsa_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_security_advisory macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_security_advisories("
+	                    "owner, repo,"
+	                    " direction := NULL, sort := NULL, before := NULL, after := NULL,"
+	                    " ecosystem := NULL, severity := NULL, cwes := NULL,"
+	                    " cve_id := NULL, ghsa_id := NULL, state := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('repository-advisory')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/security-advisories',"
+	                    " query := {'per_page': '100', 'direction': direction, 'sort': sort,"
+	                    " 'before': before, 'after': after, 'ecosystem': ecosystem,"
+	                    " 'severity': severity, 'cwes': cwes, 'cve_id': cve_id,"
+	                    " 'ghsa_id': ghsa_id, 'state': state})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_security_advisories macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_security_advisory(owner, repo, ghsa_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('repository-advisory')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/security-advisories/' || ghsa_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_security_advisory macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_secret_scanning_alerts("
+	                    "org, state := NULL, secret_type := NULL, resolution := NULL, sort := NULL, direction := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('secret-scanning-alert')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/secret-scanning/alerts',"
+	                    " query := {'per_page': '100', 'state': state, 'secret_type': secret_type,"
+	                    " 'resolution': resolution, 'sort': sort, 'direction': direction})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_secret_scanning_alerts macro: %s",
+		                            result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_repo_secret_scanning_alerts("
+	    "owner, repo, state := NULL, secret_type := NULL, resolution := NULL, sort := NULL, direction := NULL"
+	    ") AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('secret-scanning-alert')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/secret-scanning/alerts',"
+	    " query := {'per_page': '100', 'state': state, 'secret_type': secret_type,"
+	    " 'resolution': resolution, 'sort': sort, 'direction': direction})"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_secret_scanning_alerts macro: %s",
+		                            result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_repo_secret_scanning_alert(owner, repo, alert_number) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('secret-scanning-alert')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/secret-scanning/alerts/' || alert_number)"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_secret_scanning_alert macro: %s",
+		                            result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_repo_secret_scanning_alert_locations(owner, repo, alert_number) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('secret-scanning-location')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/secret-scanning/alerts/' || alert_number || "
+	    "'/locations',"
+	    " query := {'per_page': '100'})"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_secret_scanning_alert_locations macro: %s",
+		                            result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_repo_secret_scanning_scan_history(owner, repo) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('secret-scanning-scan-history')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/secret-scanning/scans', paginate := false)"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_secret_scanning_scan_history macro: %s",
+		                            result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_search_code(q, sort := NULL, direction := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('code-search-result-item')) AS r "
+	                    "FROM github_rest('/search/code',"
+	                    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
+	                    " extract_key := 'items')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_code macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_search_commits(q, sort := NULL, direction := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('commit-search-result-item')) AS r "
+	                    "FROM github_rest('/search/commits',"
+	                    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
+	                    " extract_key := 'items')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_commits macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_search_issues(q, sort := NULL, direction := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('issue-search-result-item')) AS r "
+	                    "FROM github_rest('/search/issues',"
+	                    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
+	                    " extract_key := 'items')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_issues macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_search_labels(q, repository_id, sort := NULL, direction := NULL) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('label-search-result-item')) AS r "
+	    "FROM github_rest('/search/labels',"
+	    " query := {'per_page': '100', 'q': q, 'repository_id': repository_id::VARCHAR,"
+	    " 'sort': sort, 'direction': direction},"
+	    " extract_key := 'items')"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_labels macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_search_repos(q, sort := NULL, direction := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('repo-search-result-item')) AS r "
+	                    "FROM github_rest('/search/repositories',"
+	                    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
+	                    " extract_key := 'items')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_repos macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_search_topics(q) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('topic-search-result-item')) AS r "
+	                    "FROM github_rest('/search/topics',"
+	                    " query := {'per_page': '100', 'q': q},"
+	                    " extract_key := 'items')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_topics macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_search_users(q, sort := NULL, direction := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('user-search-result-item')) AS r "
+	                    "FROM github_rest('/search/users',"
+	                    " query := {'per_page': '100', 'q': q, 'sort': sort, 'direction': direction},"
+	                    " extract_key := 'items')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_search_users macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_autolinks(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('autolink')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/autolinks')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_autolinks macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_autolink(owner, repo, autolink_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('autolink')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/autolinks/' || autolink_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_autolink macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_properties(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('custom-property-value')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/properties/values')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_properties macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_forks(owner, repo, sort := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('minimal-repository')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/forks',"
+	                    " query := {'per_page': '100', 'sort': sort})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_forks macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_rulesets(owner, repo, includes_parents := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/rulesets',"
+	                    " query := {'per_page': '100', 'includes_parents': includes_parents})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_rulesets macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_repo_ruleset(owner, repo, ruleset_id, includes_parents := NULL) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/rulesets/' || ruleset_id,"
+	    " query := {'includes_parents': includes_parents})"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_ruleset macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_repo_ruleset_history(owner, repo, ruleset_id) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/rulesets/' || ruleset_id || '/history',"
+	               " query := {'per_page': '100'})"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_ruleset_history macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_repo_ruleset_history_version(owner, repo, ruleset_id, version_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('repository-ruleset')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/rulesets/' || ruleset_id || '/history/' || version_id)"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_ruleset_history_version macro: %s",
+		                            result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_rules_for_branch(owner, repo, branch) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('repository-rule-detailed')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/rules/branches/' || branch,"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_rules_for_branch macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_webhooks(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('hook')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/hooks', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_webhooks macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_webhook(owner, repo, hook_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('hook')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/hooks/' || hook_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_webhook macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_webhook_config(owner, repo, hook_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('webhook-config')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/hooks/' || hook_id || '/config')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_webhook_config macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_webhook_deliveries(owner, repo, hook_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('hook-delivery-item')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/hooks/' || hook_id || '/deliveries',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_webhook_deliveries macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_repo_webhook_delivery(owner, repo, hook_id, delivery_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('hook-delivery')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/hooks/' || hook_id || '/deliveries/' || delivery_id)"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_webhook_delivery macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_repo_releases(owner, repo) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('release')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/releases', query := {'per_page': '100'})"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_releases macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_release(owner, repo, release_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('release')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/releases/' || release_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_release macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_release_latest(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('release')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/releases/latest')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_release_latest macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_release_by_tag(owner, repo, tag) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('release')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/releases/tags/' || tag)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_release_by_tag macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_licenses() AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('license-simple')) AS r "
+	                    "FROM github_rest('/licenses')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_licenses macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_meta() AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('api-overview')) AS r "
+	                    "FROM github_rest('/meta')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_meta macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_zen() AS TABLE "
+	                    "SELECT data AS zen "
+	                    "FROM github_rest('/zen', paginate := false)");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_zen macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_installations(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('installation')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/installations',"
+	                    " query := {'per_page': '100'}, extract_key := 'installations')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_installations macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_outside_collaborators(org, filter := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/outside_collaborators',"
+	                    " query := {'per_page': '100', 'filter': filter})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_outside_collaborators macro: %s",
+		                            result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_invitations(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('organization-invitation')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/invitations', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_invitations macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_failed_invitations(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('organization-invitation')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/failed_invitations', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_failed_invitations macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_members(org, filter := NULL, role := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/members',"
+	                    " query := {'per_page': '100', 'filter': filter, 'role': role})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_members macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_public_members(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('simple-user')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/public_members', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_public_members macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_pulls("
+	                    "owner, repo, state := NULL, head := NULL, base := NULL, sort := NULL, direction := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('pull-request-simple')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls',"
+	                    " query := {'per_page': '100', 'state': state, 'head': head,"
+	                    " 'base': base, 'sort': sort, 'direction': direction})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pulls macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_pull(owner, repo, pull_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('pull-request')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pull macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_pull_commits(owner, repo, pull_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('commit')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/commits',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pull_commits macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_pull_files(owner, repo, pull_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('diff-entry')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/files',"
+	                    " query := {'per_page': '100'}, accept := 'application/vnd.github.raw+json')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pull_files macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_pull_reviews(owner, repo, pull_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('pull-request-review')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/reviews',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pull_reviews macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_pull_review(owner, repo, pull_number, review_id) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('pull-request-review')) AS r "
+	    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/reviews/' || review_id)"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pull_review macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_pull_review_comments(owner, repo, pull_number) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('pull-request-review-comment')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/pulls/' || pull_number || '/comments',"
+	                    " query := {'per_page': '100'},"
+	                    " accept := 'application/vnd.github-commitcomment.raw+json')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_pull_review_comments macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_ratelimit() AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('rate-limit-overview')) AS r "
+	                    "FROM github_rest('/rate_limit', paginate := false)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_ratelimit macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_activity("
+	                    "owner, repo,"
+	                    " time_period := NULL, activity_type := NULL, actor := NULL, ref := NULL, direction := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('activity')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/activity',"
+	                    " query := {'per_page': '100', 'time_period': time_period, 'activity_type': activity_type,"
+	                    " 'actor': actor, 'ref': ref, 'direction': direction})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_activity macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_contributors(owner, repo, anon := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('contributor')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/contributors',"
+	                    " query := {'per_page': '100', 'anon': anon})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_contributors macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_repo_codeowners_errors(owner, repo, ref := NULL) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, '{\"column\":\"INT64\",\"kind\":\"STRING\",\"line\":\"INT64\","
+	               "\"message\":\"STRING\",\"path\":\"STRING\",\"source\":\"STRING\",\"suggestion\":\"STRING\"}') AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/codeowners/errors',"
+	               " query := {'ref': ref}, paginate := false, extract_key := 'errors')"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_codeowners_errors macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_languages(owner, repo) AS TABLE "
+	                    "SELECT e.key AS language, e.value AS bytes "
+	                    "FROM ("
+	                    "SELECT unnest(map_entries(data::MAP(VARCHAR, UBIGINT))) AS e "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/languages', paginate := false)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_languages macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_tags(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('tag')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/tags', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_tags macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_teams(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('team')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/teams', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_teams macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_repos("
+	                    "username, \"type\" := NULL, sort := NULL, direction := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('minimal-repository')) AS r "
+	                    "FROM github_rest('/users/' || username || '/repos',"
+	                    " query := {'per_page': '100', 'type': \"type\", 'sort': sort, 'direction': direction})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_repos macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_org_events(org) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('event')) AS r "
+	                    "FROM github_rest('/orgs/' || org || '/events', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_events macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_network_events(owner, repo) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('event')) AS r "
+	               "FROM github_rest('/networks/' || owner || '/' || repo || '/events', query := {'per_page': '100'})"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_network_events macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_events(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('event')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/events', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_events macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_events(username) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('event')) AS r "
+	                    "FROM github_rest('/users/' || username || '/events', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_events macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_app(app_slug) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('integration')) AS r "
+	                    "FROM github_rest('/apps/' || app_slug)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_app macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_commits("
+	                    "owner, repo,"
+	                    " sha := NULL, path := NULL, author := NULL, committer := NULL, since := NULL, until := NULL"
+	                    ") AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('commit')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/commits',"
+	                    " query := {'per_page': '100', 'sha': sha, 'path': path,"
+	                    " 'author': author, 'committer': committer, 'since': since, 'until': until})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_commits macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_commit(owner, repo, ref) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('commit')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/commits/' || ref)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_commit macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_commit_pulls(owner, repo, commit_sha) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('pull-request-simple')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/commits/' || commit_sha || '/pulls',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_commit_pulls macro: %s", result->GetError());
+	}
+	result =
+	    conn.Query("CREATE OR REPLACE MACRO github_commit_comments(owner, repo, commit_sha) AS TABLE "
+	               "SELECT r.* FROM ("
+	               "SELECT json_transform(data, github_rest_type('commit-comment')) AS r "
+	               "FROM github_rest('/repos/' || owner || '/' || repo || '/commits/' || commit_sha || '/comments',"
+	               " query := {'per_page': '100'},"
+	               " accept := 'application/vnd.github-commitcomment.raw+json')"
+	               ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_commit_comments macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_commit_comments(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('commit-comment')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/comments',"
+	                    " query := {'per_page': '100'},"
+	                    " accept := 'application/vnd.github-commitcomment.raw+json')"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_commit_comments macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_commit_status(owner, repo, ref) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('combined-commit-status')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/commits/' || ref || '/status',"
+	                    " paginate := false)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_commit_status macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_commit_statuses(owner, repo, ref) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('status')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/commits/' || ref || '/statuses',"
+	                    " query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_commit_statuses macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_repo_deploy_keys(owner, repo) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('deploy-key')) AS r "
+	                    "FROM github_rest('/repos/' || owner || '/' || repo || '/keys', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_repo_deploy_keys macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_gist(gist_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	                    "FROM github_rest('/gists/' || gist_id)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_gist macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_user_gists(username, since := NULL) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	                    "FROM github_rest('/users/' || username || '/gists',"
+	                    " query := {'per_page': '100', 'since': since})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_gists macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_gist_forks(gist_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	                    "FROM github_rest('/gists/' || gist_id || '/forks', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_gist_forks macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_gist_commits(gist_id) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, github_rest_type('gist-commit')) AS r "
+	                    "FROM github_rest('/gists/' || gist_id || '/commits', query := {'per_page': '100'})"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_gist_commits macro: %s", result->GetError());
+	}
+	result = conn.Query("CREATE OR REPLACE MACRO github_gist_revision(gist_id, sha) AS TABLE "
+	                    "SELECT r.* FROM ("
+	                    "SELECT json_transform(data, replace(github_rest_type('gist-simple'), '{}', '\"JSON\"')) AS r "
+	                    "FROM github_rest('/gists/' || gist_id || '/' || sha)"
+	                    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_gist_revision macro: %s", result->GetError());
 	}
 }
 
