@@ -29,6 +29,7 @@ struct GitHubRequestBindData : public TableFunctionData {
 };
 
 const char *GitHubUserAgent();
+std::string GitHubScheme();
 std::string ResolveToken(ClientContext &context, const std::string &host, bool is_enterprise);
 vector<pair<string, string>> ParseExtraHeaders(TableFunctionBindInput &input);
 vector<pair<string, string>> ParseQueryParams(TableFunctionBindInput &input);

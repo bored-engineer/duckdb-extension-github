@@ -22,6 +22,15 @@ However, if no secret is found, the value of the `GH_TOKEN` or `GITHUB_TOKEN` en
 
 When using a GitHub Enterprise host (via the `host` parameter or `GH_HOST` env var), the `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` environment variables will be checked.
 
+The following environment variables control connection behaviour, primarily for GitHub Enterprise instances:
+
+| Variable | Default | Description |
+|---|---|---|
+| `GH_HOST` | `api.github.com` | Default API hostname |
+| `GH_HOST_SSL` | `true` | Set to `false` to use `http://` instead of `https://` |
+| `GH_HOST_SSL_VERIFYPEER` | `true` | Set to `false` to disable `CURLOPT_SSL_VERIFYPEER` |
+| `GH_HOST_SSL_VERIFYHOST` | `true` | Set to `false` to disable `CURLOPT_SSL_VERIFYHOST` |
+
 ## Functions
 
 ### `github_rest(path, ...)`

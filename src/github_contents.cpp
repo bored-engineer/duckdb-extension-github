@@ -45,7 +45,7 @@ static unique_ptr<FunctionData> GitHubContentsRawBind(ClientContext &context, Sc
 		hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
 	}
 	bool is_enterprise = hostname != "api.github.com";
-	result->host = "https://" + hostname;
+	result->host = GitHubScheme() + "://" + hostname;
 	result->user_agent = GitHubUserAgent();
 	result->token = ResolveToken(context, result->host, is_enterprise);
 
@@ -89,7 +89,7 @@ static unique_ptr<FunctionData> GitHubContentsBind(ClientContext &context, Table
 		hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
 	}
 	bool is_enterprise = hostname != "api.github.com";
-	result->host = "https://" + hostname;
+	result->host = GitHubScheme() + "://" + hostname;
 	result->user_agent = GitHubUserAgent();
 	result->token = ResolveToken(context, result->host, is_enterprise);
 

@@ -9,6 +9,11 @@
 
 namespace duckdb {
 
+std::string GitHubScheme() {
+	const char *v = std::getenv("GH_HOST_SSL");
+	return (v && std::string(v) == "false") ? "http" : "https";
+}
+
 const char *GitHubUserAgent() {
 #ifdef EXT_VERSION_GITHUB
 	return "duckdb-extension-github/" EXT_VERSION_GITHUB
@@ -150,7 +155,7 @@ std::string BindCommonRequestData(ClientContext &context, TableFunctionBindInput
 		hostname = (gh_host_env && gh_host_env[0]) ? gh_host_env : "api.github.com";
 	}
 	bool is_enterprise = hostname != "api.github.com";
-	std::string host = "https://" + hostname;
+	std::string host = GitHubScheme() + "://" + hostname;
 
 	result.token = ResolveToken(context, host, is_enterprise);
 
@@ -270,6 +275,13 @@ void ExecuteGitHubRequest(const GitHubRequestBindData &data, const std::string *
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+
+	const char *verifypeer_env = std::getenv("GH_HOST_SSL_VERIFYPEER");
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER,
+	                 (verifypeer_env && std::string(verifypeer_env) == "false") ? 0L : 1L);
+	const char *verifyhost_env = std::getenv("GH_HOST_SSL_VERIFYHOST");
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST,
+	                 (verifyhost_env && std::string(verifyhost_env) == "false") ? 0L : 2L);
 
 	CURLcode res_code = curl_easy_perform(curl);
 
