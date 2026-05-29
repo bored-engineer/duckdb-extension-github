@@ -167,8 +167,11 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 		                            "GH_TOKEN or GITHUB_TOKEN.");
 	}
 	result->token = token;
-	result->user_agent = StringUtil::Format("%s %s https://github.com/bored-engineer/duckdb-extension-github",
-	                                        context.db->config.UserAgent(), DuckDB::SourceID());
+#ifdef EXT_VERSION_GITHUBCLIENT
+	result->user_agent = "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT " (+https://github.com/bored-engineer/duckdb-extension-github)";
+#else
+	result->user_agent = "duckdb-extension-github/unknown (+https://github.com/bored-engineer/duckdb-extension-github)";
+#endif
 
 	// Set the return types and names
 	names.emplace_back("url");
