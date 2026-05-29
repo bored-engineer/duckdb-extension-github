@@ -567,6 +567,52 @@ static std::string GraphQLEndCursor(const std::string &body) {
 	return "";
 }
 
+// Returns the "errors" array of a GraphQL response if present and non-empty, otherwise "".
+static std::string GraphQLErrors(const std::string &body) {
+	const std::string key = "\"errors\"";
+	size_t pos = 0;
+	while ((pos = body.find(key, pos)) != std::string::npos) {
+		size_t i = pos + key.size();
+		SkipJSONWhitespace(body, i);
+		if (i < body.size() && body[i] == ':') {
+			i++;
+			SkipJSONWhitespace(body, i);
+			if (i < body.size() && body[i] == '[') {
+				// Empty array → no errors
+				size_t j = i + 1;
+				SkipJSONWhitespace(body, j);
+				if (j < body.size() && body[j] == ']') {
+					return "";
+				}
+				// Return the full array text, tracking string/bracket nesting
+				bool in_string = false;
+				int depth = 0;
+				for (size_t k = i; k < body.size(); k++) {
+					char c = body[k];
+					if (in_string) {
+						if (c == '\\') {
+							k++;
+						} else if (c == '"') {
+							in_string = false;
+						}
+					} else if (c == '"') {
+						in_string = true;
+					} else if (c == '[') {
+						depth++;
+					} else if (c == ']') {
+						if (--depth == 0) {
+							return body.substr(i, k - i + 1);
+						}
+					}
+				}
+				return body.substr(i);
+			}
+		}
+		pos += key.size();
+	}
+	return "";
+}
+
 struct GitHubGraphQLBindData : public GitHubRequestBindData {
 	string query;
 	string variables_json;
@@ -603,6 +649,12 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	std::string body;
 	GitHubResponseHeaders resp_headers;
 	ExecuteGitHubRequest(data, &post_body, body, resp_headers);
+
+	// Surface any GraphQL errors returned in the response
+	std::string errors = GraphQLErrors(body);
+	if (!errors.empty()) {
+		throw InvalidInputException("GraphQL query returned errors: %s", errors);
+	}
 
 	output.SetValue(0, 0, Value(body));
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
