@@ -88,6 +88,7 @@ Makes a POST request to the GitHub GraphQL API (`/graphql`). Automatically pagin
 | `variables` | `STRUCT` | — | GraphQL variables (encoded as JSON) |
 | `headers` | `STRUCT` | — | Additional request headers |
 | `ignore_errors` | `BOOLEAN` | `false` | When `true`, return rows even if the response contains errors |
+| `paginate` | `BOOLEAN` | `true` | When `false`, return only the first page without following `pageInfo` cursors |
 
 **Returns:**
 
@@ -141,6 +142,21 @@ FROM github_graphql(
         }
     }',
     variables = {'login': 'bored-engineer'}
+);
+
+-- Fetch only the first page, no pagination
+SELECT data->'user'->'repositories'->>'nodes'
+FROM github_graphql(
+    'query($login: String!, $endCursor: String) {
+        user(login: $login) {
+            repositories(first: 10, after: $endCursor) {
+                nodes { name }
+                pageInfo { hasNextPage endCursor }
+            }
+        }
+    }',
+    variables = {'login': 'bored-engineer'},
+    paginate = false
 );
 
 -- Ignore errors and inspect them manually
