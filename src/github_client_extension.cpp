@@ -256,9 +256,9 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("ratelimit");
 	child_list_t<LogicalType> ratelimit_children;
-	ratelimit_children.emplace_back("limit", LogicalType::USMALLINT);
-	ratelimit_children.emplace_back("remaining", LogicalType::USMALLINT);
-	ratelimit_children.emplace_back("used", LogicalType::USMALLINT);
+	ratelimit_children.emplace_back("limit", LogicalType::UBIGINT);
+	ratelimit_children.emplace_back("remaining", LogicalType::UBIGINT);
+	ratelimit_children.emplace_back("used", LogicalType::UBIGINT);
 	ratelimit_children.emplace_back("reset", LogicalType::TIMESTAMP_S);
 	ratelimit_children.emplace_back("resource", LogicalType::VARCHAR);
 	return_types.emplace_back(LogicalType::STRUCT(std::move(ratelimit_children)));
@@ -327,7 +327,7 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 
 	// Build the ratelimit struct value (NULL for any absent headers)
 	auto parse_usmallint_header = [](const std::string &s) -> Value {
-		return s.empty() ? Value(LogicalType::USMALLINT) : Value::USMALLINT(static_cast<uint16_t>(std::stoul(s)));
+		return s.empty() ? Value(LogicalType::UBIGINT) : Value::UBIGINT(std::stoull(s));
 	};
 	auto parse_reset_header = [](const std::string &s) -> Value {
 		return s.empty() ? Value(LogicalType::TIMESTAMP_S)
