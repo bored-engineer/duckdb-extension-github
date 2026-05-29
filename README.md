@@ -1,29 +1,16 @@
 # duckdb-extension-github
-
-A DuckDB extension for querying the GitHub REST and GraphQL APIs directly from SQL.
+A DuckDB extension for querying the [GitHub REST API](https://docs.github.com/en/rest) and [GraphQL API](https://docs.github.com/en/graphql) directly from SQL.
 
 ## Installation
-
+> [!WARNING]  
+> This does not work yet as the extension needs to be accepted to the community repository.
 ```sql
 INSTALL github FROM community;
 LOAD github;
 ```
 
 ## Authentication
-
-Tokens are resolved in this order for the default host (`api.github.com`):
-
-1. A DuckDB `http` secret scoped to `https://api.github.com`
-2. `GH_TOKEN` environment variable
-3. `GITHUB_TOKEN` environment variable
-
-When using a GitHub Enterprise host (via the `host` parameter or `GH_HOST` env var), only enterprise-specific tokens are used — `GH_TOKEN` and `GITHUB_TOKEN` are intentionally ignored:
-
-1. A DuckDB `http` secret scoped to the enterprise host
-2. `GH_ENTERPRISE_TOKEN` environment variable
-3. `GITHUB_ENTERPRISE_TOKEN` environment variable
-
-**Creating a secret:**
+Authentication is typically handled via a DuckDB `http` secret, scoped to the GitHub API:
 ```sql
 CREATE SECRET github (
     TYPE http,
@@ -31,11 +18,13 @@ CREATE SECRET github (
     SCOPE 'https://api.github.com'
 );
 ```
+However, if no secret is found, the value of the `GH_TOKEN` or `GITHUB_TOKEN` environment variable will be checked.
+
+When using a GitHub Enterprise host (via the `host` parameter or `GH_HOST` env var), the `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` environment variables will be checked.
 
 ## Functions
 
 ### `github_rest(path, ...)`
-
 Makes a GET request to the GitHub REST API. When the response is a JSON array, one row is returned per element. Non-array responses return a single row.
 
 **Parameters:**
@@ -63,29 +52,25 @@ Makes a GET request to the GitHub REST API. When the response is a JSON array, o
 
 ```sql
 -- Get a single repository
-SELECT data->>'full_name', data->>'stargazers_count'
+SELECT
+    data->'owner'->>'login' AS owner,
+    data->>'name' AS repository,
+    (data->>'stargazers_count')::BIGINT AS stars,
 FROM github_rest('/repos/duckdb/duckdb');
 
--- List all repos for a user (paginated, one row per repo)
+-- List all repos for a user (automatically paginates, one row per repo)
 SELECT data->>'name', data->>'language'
 FROM github_rest('/users/bored-engineer/repos?per_page=100');
 
--- Search issues with a custom header
-SELECT data->>'title'
-FROM github_rest(
-    '/search/issues?q=is:open+repo:duckdb/duckdb',
-    headers = {'X-Custom-Header': 'value'}
-);
-
--- Single page only, no pagination
+-- Fetch a single page only, no pagination
 SELECT count(*) FROM github_rest(
-    '/users/bored-engineer/repos?per_page=100',
-    paginate = false
+    '/users/bored-engineer/repos?per_page=30',
+    paginate=false
 );
 
 -- GitHub Enterprise
 SELECT data->>'name'
-FROM github_rest('/repos/owner/repo', host = 'github.mycompany.com');
+FROM github_rest('/repos/owner/repo', host='github.mycompany.com');
 ```
 
 ---
@@ -127,14 +112,31 @@ Include `pageInfo { hasNextPage endCursor }` in your query and declare `$endCurs
 SELECT data->'viewer'->>'login'
 FROM github_graphql('query { viewer { login } }');
 
--- Paginate through all repositories for a user
+-- Make a query using a variable
+SELECT data->'user'->>'name'
+FROM github_graphql(
+    'query($login: String!) {
+        user(login: $login) {
+            name
+        }
+    }',
+    variables = {'login': 'bored-engineer'}
+);
+
+-- Automatically paginate through results
 SELECT UNNEST(data->>'$.user.repositories.nodes[*].name') AS name
 FROM github_graphql(
     'query($login: String!, $endCursor: String) {
         user(login: $login) {
             repositories(first: 100, after: $endCursor) {
-                nodes { name stargazerCount }
-                pageInfo { hasNextPage endCursor }
+                nodes {
+                    name
+                    stargazerCount
+                }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
             }
         }
     }',
@@ -159,7 +161,6 @@ FROM github_graphql(
 ---
 
 ### `github_rest_type(name)`
-
 Returns the JSON type schema string for a named GitHub API type, for use with DuckDB's `json_transform()` function.
 
 **Examples:**
@@ -169,25 +170,3 @@ Returns the JSON type schema string for a named GitHub API type, for use with Du
 SELECT json_transform(data, github_rest_type('repository'))
 FROM github_rest('/users/bored-engineer/repos?per_page=100');
 ```
-
-## Rate limits
-
-Every response includes a `ratelimit` struct populated from the `X-RateLimit-*` headers:
-
-```sql
-SELECT
-    ratelimit.remaining,
-    ratelimit.limit,
-    ratelimit.reset
-FROM github_rest('/meta');
-```
-
-## Environment variables
-
-| Variable | Description |
-|---|---|
-| `GH_HOST` | Default API hostname (overrides `api.github.com`) |
-| `GH_TOKEN` | GitHub personal access token |
-| `GITHUB_TOKEN` | GitHub personal access token (fallback) |
-| `GH_ENTERPRISE_TOKEN` | GitHub Enterprise token (checked first when `GH_HOST` or `host` is set) |
-| `GITHUB_ENTERPRISE_TOKEN` | GitHub Enterprise token fallback |
