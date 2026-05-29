@@ -93,6 +93,7 @@ struct GitHubRESTBindData : public TableFunctionData {
 	string host;
 	string token;
 	string user_agent;
+	string accept;
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -167,6 +168,12 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 		                            "GH_TOKEN or GITHUB_TOKEN.");
 	}
 	result->token = token;
+
+	auto accept_param = input.named_parameters.find("accept");
+	result->accept = (accept_param != input.named_parameters.end())
+	                     ? accept_param->second.GetValue<string>()
+	                     : "application/vnd.github+json";
+
 #ifdef EXT_VERSION_GITHUBCLIENT
 	result->user_agent = "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT " (+https://github.com/bored-engineer/duckdb-extension-github)";
 #else
@@ -204,7 +211,8 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	std::string user_agent_header = "User-Agent: " + data.user_agent;
 	headers = curl_slist_append(headers, auth_header.c_str());
 	headers = curl_slist_append(headers, user_agent_header.c_str());
-	headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+	std::string accept_header = "Accept: " + data.accept;
+	headers = curl_slist_append(headers, accept_header.c_str());
 	headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2026-03-10");
 	headers = curl_slist_append(headers, "X-Github-Next-Global-ID: 1");
 
@@ -251,6 +259,7 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
 	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
+	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(github_rest_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
