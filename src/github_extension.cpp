@@ -1026,6 +1026,33 @@ static void LoadInternal(ExtensionLoader &loader) {
 	if (result->HasError()) {
 		throw InvalidInputException("Failed to register github_user_followers macro: %s", result->GetError());
 	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_user_gpg_keys(username) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('gpg-key')) AS r "
+	    "FROM github_rest('/users/' || username || '/gpg_keys?per_page=100')"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_gpg_keys macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_user_ssh_keys(username) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('key')) AS r "
+	    "FROM github_rest('/users/' || username || '/keys?per_page=100')"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_ssh_keys macro: %s", result->GetError());
+	}
+	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_user_ssh_signing_keys(username) AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('ssh-signing-key')) AS r "
+	    "FROM github_rest('/users/' || username || '/ssh_signing_keys?per_page=100')"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_user_ssh_signing_keys macro: %s", result->GetError());
+	}
 }
 
 void GithubExtension::Load(ExtensionLoader &loader) {
