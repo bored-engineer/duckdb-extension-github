@@ -95,6 +95,7 @@ struct GitHubRESTBindData : public TableFunctionData {
 	string user_agent;
 	string accept;
 	string api_version;
+	vector<pair<string, string>> extra_headers;
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
@@ -209,6 +210,19 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	                          ? api_version_param->second.GetValue<string>()
 	                          : "2026-03-10";
 
+	auto headers_param = input.named_parameters.find("headers");
+	if (headers_param != input.named_parameters.end()) {
+		auto &hval = headers_param->second;
+		if (hval.type().id() != LogicalTypeId::STRUCT) {
+			throw InvalidInputException("'headers' must be a STRUCT, got %s", hval.type().ToString());
+		}
+		auto &children = StructValue::GetChildren(hval);
+		for (idx_t i = 0; i < children.size(); i++) {
+			result->extra_headers.emplace_back(StructType::GetChildName(hval.type(), i),
+			                                   children[i].GetValue<string>());
+		}
+	}
+
 #ifdef EXT_VERSION_GITHUBCLIENT
 	result->user_agent = "duckdb-extension-github/" EXT_VERSION_GITHUBCLIENT " (+https://github.com/bored-engineer/duckdb-extension-github)";
 #else
@@ -251,6 +265,10 @@ static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_
 	std::string api_version_header = "X-GitHub-Api-Version: " + data.api_version;
 	headers = curl_slist_append(headers, api_version_header.c_str());
 	headers = curl_slist_append(headers, "X-Github-Next-Global-ID: 1");
+	for (auto &kv : data.extra_headers) {
+		std::string header = kv.first + ": " + kv.second;
+		headers = curl_slist_append(headers, header.c_str());
+	}
 
 	curl_easy_setopt(curl, CURLOPT_URL, data.url.c_str());
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -298,6 +316,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["query"] = LogicalType::ANY;
+	github_rest_function.named_parameters["headers"] = LogicalType::ANY;
 	loader.RegisterFunction(github_rest_function);
 	ScalarFunctionSet github_rest_type_set("github_rest_type");
 	github_rest_type_set.AddFunction(
