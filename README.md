@@ -9,6 +9,50 @@ INSTALL github FROM community;
 LOAD github;
 ```
 
+### Manual Installation
+
+Until the extension is available from the community repository, you can install it manually from the latest CI artifacts using the [`gh`](https://cli.github.com/) CLI.
+
+**1. Download the artifact for your platform:**
+
+| Platform | Artifact pattern |
+|---|---|
+| macOS (Apple Silicon) | `*-osx_arm64` |
+| macOS (Intel) | `*-osx_amd64` |
+| Linux (x86-64) | `*-linux_amd64` |
+| Linux (ARM64) | `*-linux_arm64` |
+| Windows (x86-64) | `*-windows_amd64` |
+
+```sh
+# Find the last successful build
+RUN_ID=$(gh run list \
+  --repo bored-engineer/duckdb-extension-github \
+  --status success --limit 1 \
+  --json databaseId -q '.[0].databaseId')
+
+# Download the artifact (replace *-osx_arm64 with your platform from the table above)
+gh run download "$RUN_ID" \
+  --repo bored-engineer/duckdb-extension-github \
+  --pattern "*-osx_arm64" \
+  --dir /tmp/github-extension
+```
+
+**2. Load the extension in DuckDB:**
+
+```sql
+-- Allow loading unsigned (community) extensions
+SET allow_unsigned_extensions = true;
+LOAD '/tmp/github-extension/github.duckdb_extension';
+```
+
+Or pass the flag when launching DuckDB:
+```sh
+duckdb -unsigned
+```
+```sql
+LOAD '/tmp/github-extension/github.duckdb_extension';
+```
+
 ## Authentication
 Authentication is typically handled via a DuckDB `http` secret, scoped to the GitHub API:
 ```sql
