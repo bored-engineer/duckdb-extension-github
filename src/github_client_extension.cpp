@@ -614,7 +614,18 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 		throw InvalidInputException("GraphQL query returned errors: %s", message);
 	}
 
-	// Determine the next pagination cursor while the document is still parsed
+	// Extract just the "data" value to return, and the next pagination cursor,
+	// while the document is still parsed
+	yyjson_val *data_val = yyjson_is_obj(root) ? yyjson_obj_get(root, "data") : nullptr;
+	Value data_value(LogicalType::JSON());
+	if (data_val) {
+		char *data_json = yyjson_val_write(data_val, 0, nullptr);
+		if (data_json) {
+			data_value = Value(data_json);
+			free(data_json);
+		}
+	}
+
 	std::string next_cursor;
 	if (YYJSONFindTrue(root, "hasNextPage")) {
 		if (const char *cursor = YYJSONFindString(root, "endCursor")) {
@@ -623,7 +634,7 @@ static void GitHubGraphQLFunction(ClientContext &context, TableFunctionInput &da
 	}
 	yyjson_doc_free(doc);
 
-	output.SetValue(0, 0, Value(body));
+	output.SetValue(0, 0, data_value);
 	output.SetValue(1, 0, BuildHeadersMapValue(resp_headers));
 	output.SetValue(2, 0, BuildRateLimitValue(resp_headers));
 	output.SetCardinality(1);
