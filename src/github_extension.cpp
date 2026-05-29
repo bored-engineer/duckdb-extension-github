@@ -1054,6 +1054,22 @@ static void LoadInternal(ExtensionLoader &loader) {
 		throw InvalidInputException("Failed to register github_user_ssh_signing_keys macro: %s", result->GetError());
 	}
 	result = conn.Query(
+	    "CREATE OR REPLACE MACRO github_org_repos("
+	    "org, \"type\" := NULL, sort := NULL, direction := NULL"
+	    ") AS TABLE "
+	    "SELECT r.* FROM ("
+	    "SELECT json_transform(data, github_rest_type('minimal-repository')) AS r "
+	    "FROM github_rest("
+	    "'/orgs/' || org || '/repos?per_page=100'"
+	    " || CASE WHEN \"type\"    IS NOT NULL THEN '&type='      || \"type\"    ELSE '' END"
+	    " || CASE WHEN sort      IS NOT NULL THEN '&sort='      || sort      ELSE '' END"
+	    " || CASE WHEN direction IS NOT NULL THEN '&direction=' || direction ELSE '' END"
+	    ")"
+	    ") _");
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to register github_org_repos macro: %s", result->GetError());
+	}
+	result = conn.Query(
 	    "CREATE OR REPLACE MACRO github_org(org) AS TABLE "
 	    "SELECT r.* FROM ("
 	    "SELECT json_transform(data, github_rest_type('organization-full')) AS r "
