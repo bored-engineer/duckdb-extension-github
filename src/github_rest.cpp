@@ -1,5 +1,6 @@
 #include "github_common.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include "yyjson.hpp"
 
@@ -36,26 +37,18 @@ static std::string ParseLinkNextURL(const std::string &link_header_content) {
 struct GitHubRESTBindData : public GitHubRequestBindData {
 	bool paginate = true;
 	string extract;
+	string query_suffix; // pre-built query string (without leading ? or &)
 };
 
 static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunctionBindInput &input,
                                                vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<GitHubRESTBindData>();
 
-	std::string path = input.inputs[0].GetValue<string>();
-	if (!StringUtil::StartsWith(path, "/")) {
-		throw InvalidInputException("github_rest expects a path starting with '/', got: %s", path);
-	}
-
-	std::string host = BindCommonRequestData(context, input, *result);
-	result->host = host;
-	result->url = host + path;
+	BindCommonRequestData(context, input, *result);
 
 	auto query_params = ParseQueryParams(input);
 	if (!query_params.empty()) {
-		std::string qs = BuildQueryString(query_params);
-		result->url += (path.find('?') != std::string::npos ? '&' : '?');
-		result->url += qs;
+		result->query_suffix = BuildQueryString(query_params);
 	}
 
 	auto paginate_param = input.named_parameters.find("paginate");
@@ -75,74 +68,145 @@ static unique_ptr<FunctionData> GitHubRESTBind(ClientContext &context, TableFunc
 	return std::move(result);
 }
 
-static void GitHubRESTFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &data = const_cast<GitHubRESTBindData &>(data_p.bind_data->Cast<GitHubRESTBindData>());
+struct GitHubRESTLocalState : public LocalTableFunctionState {
+	idx_t current_input_row = 0;
+	bool initialized_row = false;
+	string current_url; // current pagination URL; empty means done with this input row
+	string token;       // resolved once per local state lifetime
+};
 
-	if (data.url.empty()) {
-		return;
-	}
+static unique_ptr<LocalTableFunctionState> GitHubRESTLocalInit(ExecutionContext &context,
+                                                               TableFunctionInitInput & /*input*/,
+                                                               GlobalTableFunctionState * /*global_state*/) {
+	return make_uniq<GitHubRESTLocalState>();
+}
 
-	if (data.token.empty()) {
-		data.token = ResolveToken(context, data.host, data.is_enterprise);
-	}
+static OperatorResultType GitHubRESTInOutFunction(ExecutionContext &context, TableFunctionInput &data_p,
+                                                  DataChunk &input, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->Cast<GitHubRESTBindData>();
+	auto &state = data_p.local_state->Cast<GitHubRESTLocalState>();
 
-	std::string body;
-	GitHubResponseHeaders resp_headers;
-	ExecuteGitHubRequest(data, nullptr, body, resp_headers);
+	input.Flatten();
 
-	Value page_url = Value(data.url);
-	Value page_headers = BuildHeadersMapValue(resp_headers);
-	Value page_ratelimit = BuildRateLimitValue(resp_headers);
-	Value page_request_id = RequestIdValue(resp_headers);
+	while (true) {
+		if (state.current_input_row >= input.size()) {
+			state.current_input_row = 0;
+			state.initialized_row = false;
+			return OperatorResultType::NEED_MORE_INPUT;
+		}
 
-	yyjson_doc *doc = yyjson_read(body.c_str(), body.size(), 0);
-	yyjson_val *root = doc ? yyjson_doc_get_root(doc) : nullptr;
-	idx_t count = 0;
-	yyjson_val *arr = root;
-	if (!data.extract.empty() && root && yyjson_is_obj(root)) {
-		arr = yyjson_obj_get(root, data.extract.c_str());
-	}
-	if (arr && yyjson_is_arr(arr)) {
-		yyjson_arr_iter it;
-		yyjson_arr_iter_init(arr, &it);
-		yyjson_val *item;
-		while ((item = yyjson_arr_iter_next(&it))) {
-			char *item_json = yyjson_val_write(item, 0, nullptr);
-			if (item_json) {
-				output.SetValue(0, count, page_url);
-				output.SetValue(1, count, Value(item_json));
-				output.SetValue(2, count, page_headers);
-				output.SetValue(3, count, page_ratelimit);
-				output.SetValue(4, count, page_request_id);
-				free(item_json);
-				count++;
+		if (!state.initialized_row) {
+			if (FlatVector::IsNull(input.data[0], state.current_input_row)) {
+				output.SetCardinality(0);
+				state.current_input_row++;
+				return OperatorResultType::HAVE_MORE_OUTPUT;
+			}
+
+			string path = FlatVector::GetValue<string_t>(input.data[0], state.current_input_row).GetString();
+			if (!StringUtil::StartsWith(path, "/")) {
+				throw InvalidInputException("github_rest expects a path starting with '/', got: %s", path);
+			}
+
+			string url = bind_data.host + path;
+			if (!bind_data.query_suffix.empty()) {
+				url += (path.find('?') != string::npos ? '&' : '?');
+				url += bind_data.query_suffix;
+			}
+
+			if (state.token.empty()) {
+				state.token = ResolveToken(context.client, bind_data.host, bind_data.is_enterprise);
+			}
+
+			state.current_url = url;
+			state.initialized_row = true;
+		}
+
+		if (state.current_url.empty()) {
+			// done with all pages for this input row
+			output.SetCardinality(0);
+			state.current_input_row++;
+			state.initialized_row = false;
+			return OperatorResultType::HAVE_MORE_OUTPUT;
+		}
+
+		GitHubRequestBindData req;
+		req.url = state.current_url;
+		req.token = state.token;
+		req.host = bind_data.host;
+		req.is_enterprise = bind_data.is_enterprise;
+		req.user_agent = bind_data.user_agent;
+		req.accept = bind_data.accept;
+		req.api_version = bind_data.api_version;
+		req.extra_headers = bind_data.extra_headers;
+
+		std::string body;
+		GitHubResponseHeaders resp_headers;
+		ExecuteGitHubRequest(req, nullptr, body, resp_headers);
+
+		Value page_url = Value(state.current_url);
+		Value page_headers = BuildHeadersMapValue(resp_headers);
+		Value page_ratelimit = BuildRateLimitValue(resp_headers);
+		Value page_request_id = RequestIdValue(resp_headers);
+
+		yyjson_doc *doc = yyjson_read(body.c_str(), body.size(), 0);
+		yyjson_val *root = doc ? yyjson_doc_get_root(doc) : nullptr;
+		idx_t count = 0;
+		yyjson_val *arr = root;
+		if (!bind_data.extract.empty() && root && yyjson_is_obj(root)) {
+			arr = yyjson_obj_get(root, bind_data.extract.c_str());
+		}
+		if (arr && yyjson_is_arr(arr)) {
+			yyjson_arr_iter it;
+			yyjson_arr_iter_init(arr, &it);
+			yyjson_val *item;
+			while ((item = yyjson_arr_iter_next(&it))) {
+				char *item_json = yyjson_val_write(item, 0, nullptr);
+				if (item_json) {
+					output.SetValue(0, count, page_url);
+					output.SetValue(1, count, Value(item_json));
+					output.SetValue(2, count, page_headers);
+					output.SetValue(3, count, page_ratelimit);
+					output.SetValue(4, count, page_request_id);
+					free(item_json);
+					count++;
+				}
+			}
+		} else {
+			output.SetValue(0, count, page_url);
+			output.SetValue(1, count, Value(body));
+			output.SetValue(2, count, page_headers);
+			output.SetValue(3, count, page_ratelimit);
+			output.SetValue(4, count, page_request_id);
+			count = 1;
+		}
+		if (doc) {
+			yyjson_doc_free(doc);
+		}
+		output.SetCardinality(count);
+
+		std::string next_url;
+		if (bind_data.paginate) {
+			next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
+			if (!next_url.empty() && !StringUtil::StartsWith(next_url, bind_data.host + "/")) {
+				throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
 			}
 		}
-	} else {
-		output.SetValue(0, count, page_url);
-		output.SetValue(1, count, Value(body));
-		output.SetValue(2, count, page_headers);
-		output.SetValue(3, count, page_ratelimit);
-		output.SetValue(4, count, page_request_id);
-		count = 1;
-	}
-	if (doc) {
-		yyjson_doc_free(doc);
-	}
-	output.SetCardinality(count);
 
-	std::string next_url;
-	if (data.paginate) {
-		next_url = resp_headers.link.empty() ? "" : ParseLinkNextURL(resp_headers.link);
-		if (!next_url.empty() && !StringUtil::StartsWith(next_url, data.host + "/")) {
-			throw InvalidInputException("Unexpected Link header for GitHub pagination: %s", next_url);
+		if (next_url.empty()) {
+			// no more pages; advance to next input row on the next call
+			state.current_url = "";
+		} else {
+			state.current_url = next_url;
 		}
+
+		return OperatorResultType::HAVE_MORE_OUTPUT;
 	}
-	data.url = next_url;
 }
 
 void RegisterGitHubRESTFunction(ExtensionLoader &loader) {
-	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, GitHubRESTFunction, GitHubRESTBind);
+	TableFunction github_rest_function("github_rest", {LogicalType::VARCHAR}, nullptr, GitHubRESTBind, nullptr,
+	                                   GitHubRESTLocalInit);
+	github_rest_function.in_out_function = GitHubRESTInOutFunction;
 	github_rest_function.named_parameters["host"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["accept"] = LogicalType::VARCHAR;
 	github_rest_function.named_parameters["api_version"] = LogicalType::VARCHAR;
